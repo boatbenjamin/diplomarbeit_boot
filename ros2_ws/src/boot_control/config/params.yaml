@@ -1,0 +1,111 @@
+###############################################################################
+# params.yaml — boot_control GNC-Stack   (KORRIGIERT)
+#
+# WICHTIG: Die Keys hier muessen EXAKT den Namen entsprechen, die der Node mit
+# declare_parameter() anmeldet. rclpy wirft bei unbekannten Keys KEINEN Fehler,
+# es ignoriert sie stillschweigend — die alte Datei war deshalb zu grossen
+# Teilen wirkungslos (Beleg: params.yaml sagte f_max: 51.5, das Terminal meldete
+# beim Start "F_MAX=35.0 N", weil thrust_to_vrx_node den Wert aus mc_common.py
+# importiert und die YAML gar nicht liest).
+#
+# Pruefen mit:  ros2 param list  /  ros2 param get <node> <name>
+###############################################################################
+
+# ---------------------------------------------------------------------------
+# Wellenfilter / Zustandsschaetzung
+# ---------------------------------------------------------------------------
+wave_filter_node:
+  ros__parameters:
+    f_wave:        0.5     # Hz,  Startwert Wellenfrequenz (0.3–0.7 typisch)
+    q_wave:        250.0   # Prozessrauschen Wellenanteil
+    r_heading_deg: 0.5     # Messrauschen Kurs      [deg^2]
+    r_gyro_deg:    0.05    # Messrauschen Gierrate  [deg^2/s^2]
+
+# ---------------------------------------------------------------------------
+# Odometrie aus Ground-Truth-Pose (NEU)
+# ---------------------------------------------------------------------------
+pose_to_odom_node:
+  ros__parameters:
+    child_frame: 'wamv/wamv/imu_wamv_link/imu_wamv_sensor'
+    odom_frame:  'odom'
+
+# ---------------------------------------------------------------------------
+# Bojen-Detektor (YOLO, fine-getuned auf VRX-Bojen)
+# ---------------------------------------------------------------------------
+buoy_detector_node:
+  ros__parameters:
+    model_path: "/home/benjamin/diplomarbeit_boot/runs/detect/runs/vrx_buoys-2/weights/best.pt"
+# ---------------------------------------------------------------------------
+# Detektions-Bruecke (Bild -> 3D)
+# ---------------------------------------------------------------------------
+detection_bridge_node:
+  ros__parameters:
+    boje_durchmesser: 0.35  # m, VRX-Kanalmarker — nachmessen/validieren!
+
+# ---------------------------------------------------------------------------
+# Objektverfolgung
+# ---------------------------------------------------------------------------
+object_tracker_node:
+  ros__parameters:
+    gate_threshold:  3.0
+    max_age_seconds: 5.0   # war: 2.0 — Spur hält länger durch bei sporadischen Treffern
+    m_confirm:       2     # war: 3 — leichter zu bestätigen
+    n_window:        5
+    dt:              0.1
+    # HINWEIS: q_pos/q_vel/r_pos existierten nur in der YAML. Die realen
+    # Rauschwerte stehen als q_std/r_std im Konstruktor von Track
+    # (object_tracker_algorithm.py) und sind von aussen nicht einstellbar.
+
+# ---------------------------------------------------------------------------
+# Mission-Manager
+# ---------------------------------------------------------------------------
+course_manager_node:
+  ros__parameters:
+    num_path_points: 400
+    backward_extension: 15.0
+    loop_radius_factor: 0.5
+    num_laps: 1
+    expected_marks: 2
+    mark_match_gate: 5.0
+    mark_lock_after: 5
+
+mission_manager_node:
+  ros__parameters:
+    acceptance_radius: 4.0
+    min_progress_fraction: 0.95
+# ---------------------------------------------------------------------------
+# ILOS-Fuehrungsgesetz
+# ---------------------------------------------------------------------------
+guidance_ilos_node:
+  ros__parameters:
+    delta:       2.0    # m, Lookahead-Distanz
+    sigma:       0.10   # Integrator-Verstaerkung
+    i_max:       3.0    # m, Integrator-Saettigung
+    u_max:       1.5    # m/s, max. Sollgeschwindigkeit
+    a_quer_max:  1.0    # m/s^2
+    k3:          1.0
+    timer_hz:    10.0   # Hz
+
+# ---------------------------------------------------------------------------
+# SB-MPC Kollisionsvermeidung
+# ---------------------------------------------------------------------------
+collision_avoidance_node:
+  ros__parameters:
+    timer_hz:    10.0   # Hz
+    # Restliche SB-MPC-Parameter: Konstanten in collision_avoidance_algorithm.py
+
+# ---------------------------------------------------------------------------
+# Regelungskaskade
+# ---------------------------------------------------------------------------
+boat_control_node:
+  ros__parameters:
+    timer_hz:    50.0   # Hz
+    # ACHTUNG: boat_control_node deklariert NUR timer_hz. Saemtliche PID-Gains
+    # (kurs_kp, gier_kp, tempo_kp ...) und f_max/d_y der alten YAML waren wirkungslos.
+    # Die echten Werte stehen in mc_kursregler.py / mc_gierratenregler.py /
+    # mc_tempo_regler.py / mc_common.py. Entweder dort aendern oder die Gains
+    # in boat_control_node.py per declare_parameter() nachziehen.
+
+# ---------------------------------------------------------------------------
+# thrust_to_vrx_node deklariert KEINE Parameter — F_MAX kommt aus mc_common.py.
+# ---------------------------------------------------------------------------
