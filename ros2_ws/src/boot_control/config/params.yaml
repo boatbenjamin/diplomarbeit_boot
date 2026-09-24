@@ -1,64 +1,77 @@
-###############################################################################
-# params.yaml — boot_control GNC-Stack   (KORRIGIERT)
+# =====================================================================
+# config/params.yaml  -- Parameter fuer den GNC-Stack in VRX (WAM-V)
+# =====================================================================
+# Die Plattformwerte stammen aus dem VRX-Quellcode:
+#   vrx_urdf/wamv_gazebo/urdf/thruster_layouts/wamv_aft_thrusters.xacro
+#     -> Motorpositionen y = +-1.027135 m
+#   vrx_urdf/wamv_gazebo/urdf/dynamics/wamv_gazebo_dynamics_plugin.xacro
+#     -> xU=100, xUU=150, nR=800, nRR=800
+#   vrx_urdf/wamv_description/urdf/wamv_base.urdf.xacro
+#     -> Masse 180 kg, Izz 446 kg m^2 (+ Motoren/Anbauten -> ca. 700)
 #
-# WICHTIG: Die Keys hier muessen EXAKT den Namen entsprechen, die der Node mit
-# declare_parameter() anmeldet. rclpy wirft bei unbekannten Keys KEINEN Fehler,
-# es ignoriert sie stillschweigend — die alte Datei war deshalb zu grossen
-# Teilen wirkungslos (Beleg: params.yaml sagte f_max: 51.5, das Terminal meldete
-# beim Start "F_MAX=35.0 N", weil thrust_to_vrx_node den Wert aus mc_common.py
-# importiert und die YAML gar nicht liest).
-#
-# Pruefen mit:  ros2 param list  /  ros2 param get <node> <name>
-###############################################################################
+# FUER DAS REALE BOOT: nur diesen Block austauschen, kein Code-Eingriff.
+#   d_y: 0.15 / f_max: 200.0 / izz, n_r, masse, x_u, x_uu ausmessen.
+# =====================================================================
 
-# ---------------------------------------------------------------------------
-# Wellenfilter / Zustandsschaetzung
-# ---------------------------------------------------------------------------
+boat_control_node:
+  ros__parameters:
+    timer_hz: 50.0
+
+    # --- Geometrie / Aktorik ---
+    d_y: 1.027135          # m, halber Motorabstand (VRX WAM-V)
+    f_max: 500.0           # N je Motor (VRX laesst 2353 N zu)
+    r_max_deg: 45.0        # maximale Soll-Gierrate
+    u_max: 2.2             # m/s (Grenze aus 2*f_max = x_u*u + x_uu*u^2)
+
+    # --- Gierdynamik: Izz*r_dot + n_r*r = N ---
+    izz: 700.0
+    n_r: 800.0
+
+    # --- Laengsdynamik: m*u_dot + x_u*u + x_uu*|u|u = X ---
+    masse: 250.0
+    x_u: 100.0
+    x_uu: 150.0
+
+    # --- Reglerauslegung ---
+    omega_i: 1.5           # rad/s Bandbreite innere Gierratenschleife
+                           #   -> Kp_r = izz*omega_i = 1050 Nm/(rad/s)
+                           #   -> Kff_r = n_r = 800
+    omega_a_faktor: 5.0    # aeussere Schleife = omega_i/5 = 0.3 rad/s
+    dpsi_max_deg: 25.0     # Rate des Kurs-Referenzmodells (< r_max!)
+
+    stoppe_bei_mission_completed: true
+
 wave_filter_node:
   ros__parameters:
-    f_wave:        0.5     # Hz,  Startwert Wellenfrequenz (0.3–0.7 typisch)
-    q_wave:        250.0   # Prozessrauschen Wellenanteil
-    r_heading_deg: 0.5     # Messrauschen Kurs      [deg^2]
-    r_gyro_deg:    0.05    # Messrauschen Gierrate  [deg^2/s^2]
+    rate_hz: 50.0
+    tau_psi: 0.30          # s, Komplementaerfilter IMU-Orientierung <-> Gyro
+    tau_vel: 0.50          # s, Tiefpass auf die GPS-Geschwindigkeit
+    tau_pos: 0.20          # s, Tiefpass auf die GPS-Position
+    heading_offset_deg: 0.0
+    gps_topic: '/wamv/sensors/gps/gps/fix'
+    imu_topic: '/wamv/sensors/imu/imu/data'
 
-# ---------------------------------------------------------------------------
-# Odometrie aus Ground-Truth-Pose (NEU)
-# ---------------------------------------------------------------------------
-pose_to_odom_node:
+thrust_to_vrx_node:
   ros__parameters:
-    child_frame: 'wamv/wamv/imu_wamv_link/imu_wamv_sensor'
-    odom_frame:  'odom'
+    vrx_thrust_max: 1000.0 # N je Thruster (VRX-Limit: 2353 N)
+    cmd_timeout: 0.5       # s ohne /cmd/thrust -> 0 N
+    publish_hz: 50.0
+    left_topic: '/wamv/thrusters/left/thrust'
+    right_topic: '/wamv/thrusters/right/thrust'
 
-# ---------------------------------------------------------------------------
-# Bojen-Detektor (YOLO, fine-getuned auf VRX-Bojen)
-# ---------------------------------------------------------------------------
-buoy_detector_node:
+guidance_ilos_node:
   ros__parameters:
-    model_path: "/home/benjamin/diplomarbeit_boot/runs/detect/runs/vrx_buoys-2/weights/best.pt"
-# ---------------------------------------------------------------------------
-# Detektions-Bruecke (Bild -> 3D)
-# ---------------------------------------------------------------------------
-detection_bridge_node:
-  ros__parameters:
-    boje_durchmesser: 0.35  # m, VRX-Kanalmarker — nachmessen/validieren!
+    delta: 6.0             # m, Lookahead. 2.0 war fuer ein 5 m langes
+                           # WAM-V zu kurz -> Zickzack auf der Geraden.
+                           # Faustregel: 2-3 Schiffslaengen.
+    sigma: 0.10
+    i_max: 3.0
+    u_max: 2.0
+    u_min: 0.5             # m/s Mindestfahrt (Ruderwirkung erhalten)
+    a_quer_max: 1.0
+    k3: 1.0
+    timer_hz: 10.0
 
-# ---------------------------------------------------------------------------
-# Objektverfolgung
-# ---------------------------------------------------------------------------
-object_tracker_node:
-  ros__parameters:
-    gate_threshold:  3.0
-    max_age_seconds: 5.0   # war: 2.0 — Spur hält länger durch bei sporadischen Treffern
-    m_confirm:       2     # war: 3 — leichter zu bestätigen
-    n_window:        5
-    dt:              0.1
-    # HINWEIS: q_pos/q_vel/r_pos existierten nur in der YAML. Die realen
-    # Rauschwerte stehen als q_std/r_std im Konstruktor von Track
-    # (object_tracker_algorithm.py) und sind von aussen nicht einstellbar.
-
-# ---------------------------------------------------------------------------
-# Mission-Manager
-# ---------------------------------------------------------------------------
 course_manager_node:
   ros__parameters:
     num_path_points: 400
@@ -73,39 +86,32 @@ mission_manager_node:
   ros__parameters:
     acceptance_radius: 4.0
     min_progress_fraction: 0.95
-# ---------------------------------------------------------------------------
-# ILOS-Fuehrungsgesetz
-# ---------------------------------------------------------------------------
-guidance_ilos_node:
-  ros__parameters:
-    delta:       2.0    # m, Lookahead-Distanz
-    sigma:       0.10   # Integrator-Verstaerkung
-    i_max:       3.0    # m, Integrator-Saettigung
-    u_max:       1.5    # m/s, max. Sollgeschwindigkeit
-    a_quer_max:  1.0    # m/s^2
-    k3:          1.0
-    timer_hz:    10.0   # Hz
 
-# ---------------------------------------------------------------------------
-# SB-MPC Kollisionsvermeidung
-# ---------------------------------------------------------------------------
 collision_avoidance_node:
   ros__parameters:
-    timer_hz:    10.0   # Hz
-    # Restliche SB-MPC-Parameter: Konstanten in collision_avoidance_algorithm.py
+    timer_hz: 10.0
 
-# ---------------------------------------------------------------------------
-# Regelungskaskade
-# ---------------------------------------------------------------------------
-boat_control_node:
+object_tracker_node:
   ros__parameters:
-    timer_hz:    50.0   # Hz
-    # ACHTUNG: boat_control_node deklariert NUR timer_hz. Saemtliche PID-Gains
-    # (kurs_kp, gier_kp, tempo_kp ...) und f_max/d_y der alten YAML waren wirkungslos.
-    # Die echten Werte stehen in mc_kursregler.py / mc_gierratenregler.py /
-    # mc_tempo_regler.py / mc_common.py. Entweder dort aendern oder die Gains
-    # in boat_control_node.py per declare_parameter() nachziehen.
+    gate_threshold: 3.0
+    max_age_seconds: 2.0
+    m_confirm: 3
+    n_window: 5
+    dt: 0.1
 
-# ---------------------------------------------------------------------------
-# thrust_to_vrx_node deklariert KEINE Parameter — F_MAX kommt aus mc_common.py.
-# ---------------------------------------------------------------------------
+detection_bridge_node:
+  ros__parameters:
+    boje_durchmesser: 0.35
+
+pose_to_odom_node:
+  ros__parameters:
+    child_frame: 'wamv/base_link'
+    odom_frame: 'odom'
+
+course_test_node:
+  ros__parameters:
+    psi_c_deg: 90.0
+    u_c: 1.5
+    rate_hz: 10.0
+    sequenz_dauer: 0.0
+    log_periode: 2.0

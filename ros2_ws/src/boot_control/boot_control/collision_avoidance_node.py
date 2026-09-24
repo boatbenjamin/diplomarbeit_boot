@@ -21,7 +21,7 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import PoseArray, Twist
 from nav_msgs.msg import Odometry
-from tf_transformations import euler_from_quaternion
+from boot_control.mc_quaternion import euler_from_quaternion
 
 from boot_control.collision_avoidance_algorithm import (
     ScenarioBasedMPC, OwnState, Obstacle,

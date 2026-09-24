@@ -1,20 +1,27 @@
-#!/usr/bin/env python3
 """
 thrust_to_vrx_node.py
-Leitet Schubkräfte [N] direkt an VRX-Thruster weiter.
+=============================================================
+Leitet Schubkraefte [N] an die VRX-Thruster weiter.
 
-Subscription:
-  /cmd/thrust   (geometry_msgs/Vector3Stamped)
-    vector.x = F_L [N]
-    vector.y = F_R [N]
+Subscription : /cmd/thrust  (geometry_msgs/Vector3Stamped)  x=F_L, y=F_R
+Publications : /wamv/thrusters/left/thrust   (std_msgs/Float64) [N]
+               /wamv/thrusters/right/thrust  (std_msgs/Float64) [N]
 
-Publications:
-  /wamv/thrusters/left/thrust   (std_msgs/Float64)  [N]
-  /wamv/thrusters/right/thrust  (std_msgs/Float64)  [N]
-
-VRX erwartet Newtonwerte direkt (Float64), kein normiertes [-1,1].
-Korrekte Topics laut VRX-Bridge-Log:
-  wamv/thrusters/left/thrust  (std_msgs/msg/Float64) -> gz.msgs.Double
+Aenderungen ggue. der alten Version
+-----------------------------------
+1. Die Saettigung lag bei 189 N mit dem Kommentar "VRX WAM-V default".
+   Tatsaechlich rechnet VRX
+       max_thrust_cmd = ((x_u + x_uu*v_max)*v_max)/2
+                      = ((51.3 + 72.4*7.71667)*7.71667)/2 = 2353 N
+   je Thruster (wamv_gazebo_thruster_config.xacro). 189 N hat die
+   Regelung also zusaetzlich beschnitten, ohne dass das irgendwo
+   sichtbar war. Neu: Parameter, Default 1000 N.
+2. Watchdog: bleibt /cmd/thrust aus (Knoten abgestuerzt, Kabel weg),
+   wurde bisher gar nichts mehr gesendet -- der gz-Thruster haelt dann
+   den LETZTEN Wert und das Boot faehrt mit Vollgas weiter. Jetzt wird
+   nach cmd_timeout aktiv 0 N gesendet.
+3. Der Node publiziert jetzt zyklisch statt nur im Callback, damit
+   auch bei stockender Regelung ein definierter Wert anliegt.
 """
 
 import rclpy
@@ -22,41 +29,70 @@ from rclpy.node import Node
 from geometry_msgs.msg import Vector3Stamped
 from std_msgs.msg import Float64
 
-# Maximale Schubkraft zur Sättigung (WAM-V VRX default ~189 N, wir begrenzen auf F_MAX)
-from boot_control.mc_common import F_MAX
-
-# VRX WAM-V Thruster-Maximum (aus VRX SDF, sicher höher als F_MAX)
-_VRX_THRUST_MAX = 189.0  # N
-
 
 class ThrustToVrxNode(Node):
     def __init__(self):
         super().__init__('thrust_to_vrx_node')
 
-        self.sub = self.create_subscription(
-            Vector3Stamped, '/cmd/thrust', self._thrust_cb, 10)
+        self.declare_parameter('vrx_thrust_max', 1000.0)   # N je Thruster
+        self.declare_parameter('cmd_timeout', 0.5)         # s
+        self.declare_parameter('publish_hz', 50.0)
+        self.declare_parameter('left_topic', '/wamv/thrusters/left/thrust')
+        self.declare_parameter('right_topic', '/wamv/thrusters/right/thrust')
 
-        # Korrekte VRX-Topics: /wamv/thrusters/left/thrust (Float64)
-        self.pub_left = self.create_publisher(
-            Float64, '/wamv/thrusters/left/thrust', 10)
-        self.pub_right = self.create_publisher(
-            Float64, '/wamv/thrusters/right/thrust', 10)
+        self._max = float(self.get_parameter('vrx_thrust_max').value)
+        self._timeout = float(self.get_parameter('cmd_timeout').value)
+
+        self._f_l = 0.0
+        self._f_r = 0.0
+        self._t_last_cmd = None
+        self._timeout_gemeldet = False
+
+        self.create_subscription(Vector3Stamped, '/cmd/thrust', self._thrust_cb, 10)
+        self._pub_left = self.create_publisher(
+            Float64, self.get_parameter('left_topic').value, 10)
+        self._pub_right = self.create_publisher(
+            Float64, self.get_parameter('right_topic').value, 10)
+
+        self.create_timer(1.0 / float(self.get_parameter('publish_hz').value), self._tick)
 
         self.get_logger().info(
-            f'thrust_to_vrx_node gestartet (F_MAX={F_MAX} N, VRX_MAX={_VRX_THRUST_MAX} N)'
-        )
+            f'thrust_to_vrx_node gestartet (Limit {self._max:.0f} N je Thruster, '
+            f'Timeout {self._timeout:.2f} s).')
 
+    # ------------------------------------------------------------------
+    def _jetzt(self) -> float:
+        return self.get_clock().now().nanoseconds * 1e-9
+
+    def _clip(self, v: float) -> float:
+        return max(-self._max, min(self._max, float(v)))
+
+    # ------------------------------------------------------------------
     def _thrust_cb(self, msg: Vector3Stamped):
-        # Direkte Newton-Werte, gesättigt auf VRX-Maximum
-        cmd_l = Float64()
-        cmd_r = Float64()
-        cmd_l.data = float(max(-_VRX_THRUST_MAX, min(_VRX_THRUST_MAX, msg.vector.x)))
-        cmd_r.data = float(max(-_VRX_THRUST_MAX, min(_VRX_THRUST_MAX, msg.vector.y)))
-        self.pub_left.publish(cmd_l)
-        self.pub_right.publish(cmd_r)
-        self.get_logger().debug(
-            f'Thrust: L={cmd_l.data:.1f} N, R={cmd_r.data:.1f} N',
-        )
+        self._f_l = self._clip(msg.vector.x)
+        self._f_r = self._clip(msg.vector.y)
+        self._t_last_cmd = self._jetzt()
+        if self._timeout_gemeldet:
+            self.get_logger().info('/cmd/thrust wieder da.')
+            self._timeout_gemeldet = False
+
+    # ------------------------------------------------------------------
+    def _tick(self):
+        t = self._jetzt()
+        if self._t_last_cmd is None or (t - self._t_last_cmd) > self._timeout:
+            if self._t_last_cmd is not None and not self._timeout_gemeldet:
+                self.get_logger().error(
+                    '/cmd/thrust seit %.2f s ausgeblieben -- Schub auf 0 N.'
+                    % self._timeout)
+                self._timeout_gemeldet = True
+            f_l = f_r = 0.0
+        else:
+            f_l, f_r = self._f_l, self._f_r
+
+        left, right = Float64(), Float64()
+        left.data, right.data = f_l, f_r
+        self._pub_left.publish(left)
+        self._pub_right.publish(right)
 
 
 def main(args=None):

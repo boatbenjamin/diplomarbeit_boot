@@ -1,12 +1,19 @@
 """
 mc_common.py
 =============================================================
-Gemeinsame Datentypen und Hilfsfunktionen fuer die Echtzeitschicht
-auf dem Mikrocontroller (Kapitel 11 des Konzeptpapiers).
+Gemeinsame Datentypen und Hilfsfunktionen fuer die Echtzeitschicht.
 
-Wird von allen mc_*.py-Modulen importiert. Bewusst ROS-unabhaengig
-gehalten (reine Python-Datentypen), damit sich der Code 1:1 in die
-spaetere micro-ROS-Firmware uebernehmen laesst.
+WICHTIGE AENDERUNG ggue. der alten Version
+------------------------------------------
+Die Bootsparameter stehen NICHT mehr als feste Modulkonstanten hier
+drin. Sie waren auf das reale kleine Boot getunt (D_Y = 0.15 m) und
+haben in VRX (WAM-V, D_Y = 1.027 m) die komplette Regelung verstimmt.
+
+Stattdessen: dataclass BootParameter, die pro Plattform aus
+config/params.yaml gefuellt wird. Die Defaults hier sind die
+VRX-WAM-V-Werte (aus vrx_urdf/wamv_description + SimpleHydrodynamics).
+Fuer das reale Boot einfach die Werte in params.yaml ueberschreiben --
+kein Codeeingriff noetig.
 """
 
 import math
@@ -14,21 +21,64 @@ from dataclasses import dataclass
 
 
 # =====================================================================
-# GEMEINSAME BOOTSPARAMETER (am Boot auszumessen, Kapitel 5.4/6/Anhang B)
+# BOOTS- UND PLATTFORMPARAMETER
 # =====================================================================
 
-K_NOMOTO = 1.1              # 1/s, Nomoto-Verstaerkung
-T_NOMOTO = 1.2              # s, Nomoto-Zeitkonstante
-D_Y = 0.15                  # m, halber Motorabstand
-F_MAX = 35.0                # N, max. Schub je Motor (Software-Limit, 60-70% des physikalischen Maximums)
-R_MAX = math.radians(50)    # rad/s, maximale Gierrate
+@dataclass
+class BootParameter:
+    """Alle plattformabhaengigen Groessen an EINER Stelle."""
 
-RHO_WASSER = 1025.0         # kg/m^3
-S_BENETZT = 0.20            # m^2, benetzte Flaeche (Kapitel 6.1)
-C_T = 0.010                 # Gesamtwiderstandsbeiwert (ITTC + Zuschlaege)
+    # --- Geometrie / Aktorik ------------------------------------------
+    d_y: float = 1.027135      # m, halber Motorabstand
+                               #    VRX WAM-V: 1.027135 (aus wamv_aft_thrusters.xacro)
+                               #    reales Boot: 0.15
+    f_max: float = 500.0       # N, Software-Limit je Motor
+                               #    VRX laesst 2353 N zu (max_thrust_cmd),
+                               #    500 N ist eine bewusst gesetzte Reserve
+    r_max: float = math.radians(45.0)   # rad/s, maximale Soll-Gierrate
+    u_max: float = 2.2         # m/s, maximale Soll-Fahrt
+                               #    Grenze: 2*f_max = x_u*u + x_uu*u^2
+                               #    -> mit f_max=500 N sind ca. 2.26 m/s drin
 
-DT = 0.02                   # s, feste Regelperiode (50 Hz), NICHT gemessen
-                             # (Kapitel 11.5, Punkt 1: reproduzierbare Integratordynamik)
+    # --- Gierdynamik (1. Ordnung: Izz*r_dot + n_r*r = N) --------------
+    izz: float = 700.0         # kg*m^2  (WAM-V base 446 + Motoren/Anbauten)
+    n_r: float = 800.0         # N*m/(rad/s), lineare Gierdaempfung (SimpleHydrodynamics nR)
+
+    # --- Laengsdynamik (m*u_dot + x_u*u + x_uu*|u|u = X) --------------
+    masse: float = 250.0       # kg
+    x_u: float = 100.0         # N/(m/s)   (SimpleHydrodynamics xU)
+    x_uu: float = 150.0        # N/(m/s)^2 (SimpleHydrodynamics xUU)
+
+    # --- Reglerbandbreiten --------------------------------------------
+    omega_i: float = 1.5       # rad/s, Bandbreite innere Gierratenschleife
+    omega_a_faktor: float = 5.0  # aeussere Schleife = omega_i / faktor
+    dpsi_max: float = math.radians(25.0)  # rad/s, Rate des Kurs-Referenzmodells
+                                          # bewusst < r_max, damit die Referenz
+                                          # fuer das Boot ueberhaupt fahrbar ist
+
+    # --- abgeleitete Groessen ------------------------------------------
+    @property
+    def n_max(self) -> float:
+        """Maximal erreichbares Giermoment [N*m] (beide Motoren gegenlaeufig)."""
+        return 2.0 * self.f_max * self.d_y
+
+    @property
+    def t_nomoto(self) -> float:
+        """Ersatz-Zeitkonstante der Gierdynamik [s]."""
+        return self.izz / self.n_r
+
+    @property
+    def k_nomoto(self) -> float:
+        """Ersatz-Verstaerkung der Gierdynamik [(rad/s)/(N*m)]."""
+        return 1.0 / self.n_r
+
+    @property
+    def omega_a(self) -> float:
+        return self.omega_i / self.omega_a_faktor
+
+
+# Fester Regeltakt (Kapitel 11.5: reproduzierbare Integratordynamik)
+DT = 0.02   # s, 50 Hz
 
 
 # =====================================================================
@@ -37,9 +87,8 @@ DT = 0.02                   # s, feste Regelperiode (50 Hz), NICHT gemessen
 
 @dataclass
 class BootState:
-    """Vom Zustandsschaetzer gelieferter Zustand (reduziert auf das,
-    was die Regelung auf dem Mikrocontroller braucht)."""
-    psi: float      # Kurswinkel [rad]
+    """Vom Zustandsschaetzer gelieferter Zustand."""
+    psi: float      # Kurswinkel [rad], ENU (0 = Ost, +90 deg = Nord)
     r: float        # Gierrate [rad/s]
     u: float        # Fahrt durchs Wasser [m/s]
 
@@ -61,8 +110,7 @@ class SafetyStatus:
 # =====================================================================
 
 def wrap_pi(angle: float) -> float:
-    """Faltet einen Winkel auf das Intervall (-pi, pi] zurueck.
-    Kapitel 11.2: ein vergessener Umlauf hier ist 'ein Klassiker'."""
+    """Faltet einen Winkel auf (-pi, pi] zurueck."""
     return (angle + math.pi) % (2.0 * math.pi) - math.pi
 
 
@@ -71,14 +119,22 @@ def clip(value: float, lo: float, hi: float) -> float:
 
 
 def rate_limit(target: float, previous: float, max_rate: float, dt: float) -> float:
-    """Begrenzt die Aenderung von previous nach target auf max_rate pro dt."""
-    delta = target - previous
-    max_delta = max_rate * dt
-    delta = clip(delta, -max_delta, max_delta)
+    delta = clip(target - previous, -max_rate * dt, max_rate * dt)
     return previous + delta
 
 
-def widerstand_vorsteuerung(u_d: float) -> float:
-    """X_ff(u_d) = 0.5 * rho * S * Ct * u_d^2 (Kapitel 6.1/11.2),
-    vorzeichenrichtig fuer Rueckwaertsfahrt."""
-    return math.copysign(0.5 * RHO_WASSER * S_BENETZT * C_T * u_d ** 2, u_d)
+def widerstand_vorsteuerung(u_d: float, p: BootParameter) -> float:
+    """Stationaer noetige Laengskraft fuer die Sollfahrt u_d.
+
+    FEHLER IN DER ALTEN VERSION: dort wurde
+        X_ff = 0.5*rho*S*Ct*u^2
+    mit S = 0.20 m^2 und Ct = 0.010 gerechnet -> bei 2 m/s ganze 4 N.
+    Der tatsaechliche Widerstand des WAM-V bei 2 m/s ist
+        100*2 + 150*4 = 800 N.
+    Die Vorsteuerung war also um Faktor 200 zu klein und der
+    I-Anteil musste alles alleine hochziehen (ca. 50 s bis Sollfahrt).
+
+    Jetzt: dasselbe Widerstandsmodell, das auch die Simulation
+    benutzt -- X_ff(u) = x_u*u + x_uu*|u|*u.
+    """
+    return p.x_u * u_d + p.x_uu * abs(u_d) * u_d

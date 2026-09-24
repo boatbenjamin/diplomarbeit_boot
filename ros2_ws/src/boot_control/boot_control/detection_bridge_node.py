@@ -33,7 +33,7 @@ from nav_msgs.msg import Odometry
 from vision_msgs.msg import Detection2DArray
 from geometry_msgs.msg import PoseArray, Pose
 from cv_bridge import CvBridge
-from tf_transformations import euler_from_quaternion
+from boot_control.mc_quaternion import euler_from_quaternion
 
 
 # Bekannte Bojengrösse in VRX (Kanalmarker ~0.35 m Durchmesser)

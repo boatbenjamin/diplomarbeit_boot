@@ -1,28 +1,36 @@
 """
-gnc_test_no_perception.launch.py   (NEU, nur zum Testen)
+gnc_test_no_perception.launch.py
 =============================================================
-Startet die GNC-Kette OHNE Wahrnehmung (buoy_detector, detection_bridge,
-object_tracker fehlen absichtlich). Stattdessen speist man /objects von
-Hand per `ros2 topic pub` mit sauberen, erfundenen Bojenpositionen —
-damit laesst sich pruefen, ob mission_manager -> course_manager ->
-guidance_ilos -> collision_avoidance -> boat_control -> thrust_to_vrx
-korrekt zusammenspielen, unabhaengig davon ob die Kamera/YOLO/HSV echte
-Bojen findet.
+Reduzierter Stack zum Testen der REGELUNG allein:
 
-Odometrie (pose_to_odom, wave_filter) bleibt ECHT drin, weil die bereits
-nachweislich funktioniert (/wamv/odom laeuft mit ~150 Hz).
+    wave_filter_node  ->  boat_control_node  ->  thrust_to_vrx_node
 
-Verwendung:
-  ros2 launch boot_control gnc_test_no_perception.launch.py
+Optional (start_test:=true) wird course_test_node mitgestartet, der
+/cmd/course_safe sendet und den Kursfehler mitloggt.
 
-Danach in einem zweiten Terminal die Fake-Bojen einspeisen, siehe
-Anleitung im Chat (ros2 topic pub /objects ...).
+WICHTIGE AENDERUNGEN ggue. der alten Version
+--------------------------------------------
+1. Die ros_gz_bridge wird jetzt nur noch auf Wunsch gestartet
+   (start_bridge:=true, Default false). VRX bringt seine eigene
+   Bridge mit; zwei Bridges auf denselben Topics erzeugen doppelte
+   Nachrichten und dadurch scheinbar "springende" Sensordaten.
+   Vor dem Einschalten pruefen:
+       ros2 topic list | grep wamv
+       ros2 topic hz /wamv/sensors/imu/imu/data
+2. `use_sim_time` wird als echter Bool-Parameter uebergeben, ausserdem
+   an ALLE Knoten. Ohne use_sim_time laufen die Timer auf Wall Clock,
+   waehrend die Sim langsamer laeuft -- dann stimmt kein einziges dt.
+3. Die Kamera-Topics sind raus: dieser Test braucht keine Kamera,
+   und eine Bridge auf ein nicht existierendes Kamera-Topic haelt
+   sonst die ganze Bridge auf.
 """
 
 import os
+
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -30,54 +38,79 @@ from launch_ros.actions import Node
 def launch_setup(context, *args, **kwargs):
     pkg = get_package_share_directory('boot_control')
     params_file = os.path.join(pkg, 'config', 'params.yaml')
-    use_sim_time = LaunchConfiguration('use_sim_time').perform(context)
-    gz_world = LaunchConfiguration('gz_world').perform(context)
 
-    def node(name, executable=None):
+    use_sim_time = LaunchConfiguration('use_sim_time').perform(context).lower() == 'true'
+    gz_world = LaunchConfiguration('gz_world').perform(context)
+    start_bridge = LaunchConfiguration('start_bridge').perform(context).lower() == 'true'
+
+    def node(name, executable):
         return Node(
             package='boot_control',
-            executable=executable or name,
+            executable=executable,
             name=name,
             output='screen',
-            parameters=[params_file, {'use_sim_time': use_sim_time == 'true'}],
+            emulate_tty=True,
+            parameters=[params_file, {'use_sim_time': use_sim_time}],
         )
 
-    base = f'/world/{gz_world}/model/wamv/link/wamv'
-    gz_imu = f'{base}/imu_wamv_link/sensor/imu_wamv_sensor/imu'
-    ros_imu = '/wamv/sensors/imu/imu/data'
+    aktionen = []
 
-    # Nur IMU wird gebridged -- Kamera/camera_info brauchen wir hier nicht,
-    # da buoy_detector/detection_bridge in diesem Test nicht laufen.
-    imu_bridge = Node(
-        package='ros_gz_bridge',
-        executable='parameter_bridge',
-        name='gnc_imu_bridge_test',
-        arguments=[f'{gz_imu}@sensor_msgs/msg/Imu[gz.msgs.IMU'],
-        remappings=[(gz_imu, ros_imu)],
-        output='screen',
-    )
+    # --- optionale Sensor-Bridge (nur wenn VRX keine eigene startet) ---
+    if start_bridge:
+        base = f'/world/{gz_world}/model/wamv/link/wamv'
+        gz_imu = f'{base}/imu_wamv_link/sensor/imu_wamv_sensor/imu'
+        gz_gps = f'{base}/gps_wamv_link/sensor/gps_wamv_sensor/navsat'
+        ros_imu = '/wamv/sensors/imu/imu/data'
+        ros_gps = '/wamv/sensors/gps/gps/fix'
 
-    return [
-        imu_bridge,
+        aktionen.append(Node(
+            package='ros_gz_bridge',
+            executable='parameter_bridge',
+            name='gnc_sensor_bridge',
+            arguments=[
+                f'{gz_imu}@sensor_msgs/msg/Imu[gz.msgs.IMU',
+                f'{gz_gps}@sensor_msgs/msg/NavSatFix[gz.msgs.NavSat',
+            ],
+            remappings=[(gz_imu, ros_imu), (gz_gps, ros_gps)],
+            parameters=[{'use_sim_time': use_sim_time}],
+            output='screen',
+        ))
 
-        node('pose_to_odom_node', 'pose_to_odom'),
-        node('wave_filter_node',  'wave_filter'),
-
-        # ── object_tracker_node ABSICHTLICH WEGGELASSEN ────────────────────
-        # -> /objects wird per Hand ueber `ros2 topic pub` gespeist.
-
-        node('mission_manager_node',     'mission_manager'),
-        node('course_manager_node',      'course_manager'),
-        node('guidance_ilos_node',       'guidance_ilos'),
-        node('collision_avoidance_node', 'collision_avoidance'),
-        node('boat_control_node',        'boat_control'),
-        node('thrust_to_vrx_node',       'thrust_to_vrx'),
+    aktionen += [
+        node('wave_filter_node',   'wave_filter_node'),    # Zustandsschaetzung
+        node('boat_control_node',  'boat_control'),        # Regelungskaskade
+        node('thrust_to_vrx_node', 'thrust_to_vrx'),       # VRX-Interface
     ]
+
+    # --- optionaler Testgeber fuer den Sollkurs ---
+    aktionen.append(Node(
+        package='boot_control',
+        executable='course_test',
+        name='course_test_node',
+        output='screen',
+        emulate_tty=True,
+        parameters=[
+            params_file,
+            {'use_sim_time': use_sim_time},
+            {'psi_c_deg': float(LaunchConfiguration('psi_c_deg').perform(context))},
+            {'u_c': float(LaunchConfiguration('u_c').perform(context))},
+        ],
+        condition=IfCondition(LaunchConfiguration('start_test')),
+    ))
+
+    return aktionen
 
 
 def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('use_sim_time', default_value='true'),
-        DeclareLaunchArgument('gz_world', default_value='sydney_regatta'),
+        DeclareLaunchArgument('gz_world', default_value='follow_path_task'),
+        DeclareLaunchArgument('start_bridge', default_value='false',
+                              description='Eigene ros_gz_bridge starten? '
+                                          'Nur wenn VRX keine mitbringt.'),
+        DeclareLaunchArgument('start_test', default_value='true',
+                              description='course_test_node mitstarten'),
+        DeclareLaunchArgument('psi_c_deg', default_value='90.0'),
+        DeclareLaunchArgument('u_c', default_value='1.5'),
         OpaqueFunction(function=launch_setup),
     ])

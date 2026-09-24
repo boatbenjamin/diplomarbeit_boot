@@ -21,7 +21,7 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry, Path
-from tf_transformations import euler_from_quaternion
+from boot_control.mc_quaternion import euler_from_quaternion
 
 from boot_control.guidance_ilos_algorithm import ILOSGuidance, get_path_state
 
@@ -36,6 +36,7 @@ class GuidanceILOSNode(Node):
         self.declare_parameter('u_max',       1.8)   # m/s
         self.declare_parameter('a_quer_max',  1.0)   # m/s^2
         self.declare_parameter('k3',          1.0)   # Kursfehler-Daempfung
+        self.declare_parameter('u_min',       0.5)   # m/s, Mindestfahrt (Ruderwirkung)
         self.declare_parameter('timer_hz',    10.0)  # Hz
 
         self._guidance = ILOSGuidance(
@@ -45,6 +46,7 @@ class GuidanceILOSNode(Node):
             u_max      = self.get_parameter('u_max').value,
             a_quer_max = self.get_parameter('a_quer_max').value,
             k3         = self.get_parameter('k3').value,
+            u_min      = self.get_parameter('u_min').value,
         )
 
         # Zustand
@@ -84,7 +86,21 @@ class GuidanceILOSNode(Node):
     # ------------------------------------------------------------------
     def _timer_cb(self):
         if len(self._path_x) < 2:
+            self.get_logger().warn('Kein /path empfangen -- ILOS inaktiv.',
+                                   throttle_duration_sec=5.0)
             return
+
+        # echtes dt statt des nominalen Timer-dt (wichtig fuer den
+        # ILOS-Integrator, wenn die Sim langsamer als Echtzeit laeuft)
+        t_now = self.get_clock().now().nanoseconds * 1e-9
+        if self._last_stamp is None:
+            self._last_stamp = t_now
+            return
+        dt_real = t_now - self._last_stamp
+        self._last_stamp = t_now
+        if not (1e-4 < dt_real < 1.0):
+            return
+        self._dt = dt_real
 
         y_e, pi_h, kappa, _ = get_path_state(self._pos, self._path_x, self._path_y)
 

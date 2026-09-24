@@ -1,56 +1,61 @@
 """
 mc_kursregler.py
 =============================================================
-Aeussere Regelschleife: Kurs -> Soll-Gierrate (Kapitel 11.1/11.2
-des Konzeptpapiers).
+Aeussere Regelschleife: Kurs -> Soll-Gierrate.
 
-    r_d = sat(Kp_psi * e_psi, +-r_max)
-    e_psi = wrap_pi(psi_c - psi_hat)
+    r_d = sat(Kp_psi * e_psi, +-r_max),   e_psi = wrap_pi(psi_ref - psi_hat)
 
-Reiner P-Regler, ergaenzt um ein Referenzmodell: Aus einem
-Kurssprung wird eine glatte, mit den Fahrzeuggrenzen vertraegliche
-Sollkurve gebildet, damit aus einem Zielwechsel kein
-Stellgroessensprung wird.
-
-Laeuft mit 10-20 Hz, mindestiens Faktor 5 langsamer als die innere
-Gierratenschleife (mc_gierratenregler.py), die mit 50 Hz laeuft.
+Aenderungen ggue. der alten Version
+-----------------------------------
+1. Kp_psi und dpsi_max kommen jetzt aus BootParameter statt aus fest
+   verdrahteten Modulkonstanten.
+2. Das Referenzmodell lief mit dpsi_max = 60 deg/s und war damit
+   SCHNELLER als das Boot ueberhaupt drehen kann -- es hatte also
+   keinerlei glaettende Wirkung. Jetzt default 25 deg/s (< r_max).
+3. Neu: Der Referenzkurs wird an den Istkurs gefesselt (max. 1 rad
+   Vorsprung). Sonst eilt die Referenz bei einem 180-Grad-Sprung dem
+   Boot davon, laeuft in die falsche Drehrichtung weiter und der
+   Regler nimmt den laengeren Weg.
 """
 
 import math
 from dataclasses import dataclass
 from typing import Optional
 
-from boot_control.mc_common import R_MAX, clip, wrap_pi
-
-# --- Startwerte (Anhang B) ---------------------------------------------
-OMEGA_I = 3.0                  # rad/s, Bandbreite innere Schleife (siehe mc_gierratenregler.py)
-OMEGA_A = OMEGA_I / 5.0        # rad/s, mind. Faktor 5 langsamer
-KP_PSI = OMEGA_A               # reiner P-Regler auf den Kursfehler
-DPSI_MAX = math.radians(60.0)  # rad/s, max. Aenderungsrate des Kurs-Sollwerts (Referenzmodell)
+from boot_control.mc_common import BootParameter, clip, wrap_pi
 
 
 @dataclass
 class CourseController:
-    kp_psi: float = KP_PSI
-    r_max: float = R_MAX
-    dpsi_max: float = DPSI_MAX
-    psi_ref: Optional[float] = None  # geglaetteter Sollkurs (Referenzmodell)
+    p: BootParameter = None
+    psi_ref: Optional[float] = None
+    max_vorsprung: float = 1.0        # rad, max. Vorlauf der Referenz vor dem Ist
+
+    def __post_init__(self):
+        if self.p is None:
+            self.p = BootParameter()
+
+    @property
+    def kp_psi(self) -> float:
+        return self.p.omega_a
 
     def reset(self, psi_aktuell: float):
-        """Stossfreie Initialisierung, z.B. beim Uebergang nach 'aktiv'."""
-        self.psi_ref = psi_aktuell
+        self.psi_ref = wrap_pi(psi_aktuell)
 
     def step(self, psi_c: float, psi_hat: float, dt: float) -> float:
         if self.psi_ref is None:
-            self.psi_ref = psi_hat
+            self.psi_ref = wrap_pi(psi_hat)
 
-        # Referenzmodell: geglaetteter Kurs naehert sich psi_c an,
-        # begrenzt auf dpsi_max. Winkeldifferenz muss gewickelt werden.
+        # Referenzmodell: glatte, fahrbare Annaeherung an psi_c
         e_ref = wrap_pi(psi_c - self.psi_ref)
-        max_step = self.dpsi_max * dt
-        step_val = clip(e_ref, -max_step, max_step)
-        self.psi_ref = wrap_pi(self.psi_ref + step_val)
+        step_val = clip(e_ref, -self.p.dpsi_max * dt, self.p.dpsi_max * dt)
+        psi_ref_neu = wrap_pi(self.psi_ref + step_val)
+
+        # Referenz darf dem Istkurs nicht davonlaufen (Anti-Reference-Windup)
+        vorsprung = wrap_pi(psi_ref_neu - psi_hat)
+        if abs(vorsprung) > self.max_vorsprung:
+            psi_ref_neu = wrap_pi(psi_hat + math.copysign(self.max_vorsprung, vorsprung))
+        self.psi_ref = psi_ref_neu
 
         e_psi = wrap_pi(self.psi_ref - psi_hat)
-        r_d = clip(self.kp_psi * e_psi, -self.r_max, self.r_max)
-        return r_d
+        return clip(self.kp_psi * e_psi, -self.p.r_max, self.p.r_max)

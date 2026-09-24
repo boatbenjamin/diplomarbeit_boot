@@ -23,6 +23,8 @@ I_MAX = 3.0         # m, Integrator-Saettigung
 U_MAX = 1.8         # m/s, maximale Fahrt
 A_QUER_MAX = 1.0    # m/s^2, maximale Querbeschleunigung (fuer Kurvengeschwindigkeit)
 K3 = 1.0            # Reduktionsfaktor: Fahrt sinkt bei grossem Kursfehler
+U_MIN = 0.5         # m/s, Mindestfahrt -- darunter verliert das Boot
+                    #      Ruderwirkung und der Regler kann haengen bleiben
 
 
 # =====================================================================
@@ -30,13 +32,15 @@ K3 = 1.0            # Reduktionsfaktor: Fahrt sinkt bei grossem Kursfehler
 # =====================================================================
 class ILOSGuidance:
     def __init__(self, delta: float = DELTA, sigma: float = SIGMA, i_max: float = I_MAX,
-                 u_max: float = U_MAX, a_quer_max: float = A_QUER_MAX, k3: float = K3):
+                 u_max: float = U_MAX, a_quer_max: float = A_QUER_MAX, k3: float = K3,
+                 u_min: float = U_MIN):
         self.delta = delta
         self.sigma = sigma
         self.i_max = i_max
         self.u_max = u_max
         self.a_quer_max = a_quer_max
         self.k3 = k3
+        self.u_min = u_min
         self.y_int: float = 0.0
 
     def reset_integral(self) -> None:
@@ -51,12 +55,26 @@ class ILOSGuidance:
         return (psi_d + math.pi) % (2 * math.pi) - math.pi
 
     def calculate_speed(self, kappa: float, current_yaw: float, psi_d: float) -> float:
-        """Berechnet die Sollfahrt u_d [m/s] in Abhaengigkeit von Kruemmung und Kursfehler."""
+        """Berechnet die Sollfahrt u_d [m/s] aus Kruemmung und Kursfehler.
+
+        KORREKTUR ggue. der alten Version
+        ---------------------------------
+        Alt:  u_heading = u_max * max(0, 1 - k3*|e_psi|)   mit k3 = 1.0
+        Bei einem Kursfehler von 57 Grad (1 rad) wurde u_d damit exakt
+        0 und das Boot blieb stehen. Ein stehendes Boot hat aber kaum
+        noch Ruderwirkung ueber die Rumpfanstroemung und die Regelung
+        kommt nur noch ueber Differenzschub heraus -- in Stroemung oder
+        Wind bleibt es dann haengen (klassischer Deadlock im LOS-Regler).
+
+        Neu:  cos-foermige Reduktion mit einer Mindestfahrt u_min, damit
+        das Boot immer Fahrt durchs Wasser behaelt.
+        """
         e_psi = (psi_d - current_yaw + math.pi) % (2 * math.pi) - math.pi
         u_curve = math.sqrt(self.a_quer_max / abs(kappa)) if abs(kappa) > 1e-3 else self.u_max
-        u_heading = self.u_max * max(0.0, (1.0 - self.k3 * abs(e_psi)))
-        u_d = min(self.u_max, u_curve, u_heading)
-        return max(0.0, u_d)
+        # cos-Kennlinie: 1.0 bei e_psi = 0, sanft abfallend, nie negativ
+        f_heading = max(0.0, math.cos(min(abs(e_psi) * self.k3, math.pi / 2.0)))
+        u_heading = self.u_min + (self.u_max - self.u_min) * f_heading
+        return max(self.u_min, min(self.u_max, u_curve, u_heading))
 
 
 # =====================================================================

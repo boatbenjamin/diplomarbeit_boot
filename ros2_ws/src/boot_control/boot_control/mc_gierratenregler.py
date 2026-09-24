@@ -1,50 +1,39 @@
 """
 mc_gierratenregler.py
 =============================================================
-Innere Regelschleife: Gierrate -> Giermoment (Kapitel 11.1/11.2
-des Konzeptpapiers).
+Innere Regelschleife: Gierrate -> Giermoment N [N*m].
 
-Reglertyp PID mit Vorsteuerung, aus dem Nomoto-Modell (T*r_dot + r
-= K*delta) abgeleitet:
+Auslegung aus dem Ersatzmodell 1. Ordnung der Gierdynamik
 
-    Kff = 1/K
-    Kp  = T*omega_i / K
-    Ki  = Kp*omega_i / 5
+    Izz * r_dot + n_r * r = N     <=>    T*r_dot + r = K*N
+    T = Izz/n_r        K = 1/n_r
 
-Laeuft mit 50 Hz, mindestens Faktor 5 schneller als die aeussere
-Kursschleife (mc_kursregler.py). Regelt ausschliesslich die
-Gierrate und wirkt damit unmittelbar gegen jede Stoerung (Wellen,
-Wind) - die aeussere Schleife gibt nur noch eine gewuenschte
-Gierrate vor.
+    Kff = 1/K        = n_r
+    Kp  = T*omega_i/K = Izz*omega_i
+    Ki  = Kp*omega_i/5
 
-Kd startet bei 0 (siehe Modulkopf von mc_antiwindup_pid.py) und
-sollte nur erhoeht werden, wenn die Sprungantwort ohne ihn
-ueberschwingt - und dann gefiltert werden.
+WARUM DIE ALTEN WERTE NICHT FUNKTIONIERT HABEN
+----------------------------------------------
+Alt: K_NOMOTO = 1.1, T_NOMOTO = 1.2 -> Kp = 3.27 N*m pro rad/s.
+Die Gierdaempfung des WAM-V ist aber n_r = 800 N*m pro rad/s.
+Der P-Anteil war damit rund 250-mal zu schwach; geregelt hat
+praktisch nur der I-Anteil, der ueber ~50 s hochgelaufen ist und
+dann 45 Grad ueberschwungen hat.
+Neu (Izz=700, omega_i=1.5): Kp = 1050, Kff = 800.
 """
 
 from boot_control.mc_antiwindup_pid import AntiWindupPID
-from boot_control.mc_common import D_Y, F_MAX, K_NOMOTO, T_NOMOTO
-
-# --- Startwerte (Anhang B, am realen Boot per Zickzack-Versuch pruefen) -
-OMEGA_I = 3.0    # rad/s, gewuenschte Bandbreite innere Schleife
-
-KFF_R = 1.0 / K_NOMOTO
-KP_R = T_NOMOTO * OMEGA_I / K_NOMOTO
-KI_R = KP_R * OMEGA_I / 5.0
-KD_R = 0.0
-T_T_R = (KP_R / KI_R) if KI_R > 0 else 1.0  # Rueckrechnungszeitkonstante ~ Ti
+from boot_control.mc_common import BootParameter
 
 
-def make_gierraten_pid() -> AntiWindupPID:
-    """Erzeugt den Gierraten-PID. Stellgroesse ist das (unsaettigte)
-    Giermoment N [N*m]; die Umrechnung auf Motorschuebe passiert in
-    mc_schubaufteilung.py."""
+def make_gierraten_pid(p: BootParameter) -> AntiWindupPID:
+    """Stellgroesse ist das Giermoment N [N*m]; die Umrechnung auf
+    Motorschuebe passiert in mc_schubaufteilung.py."""
+    kff = 1.0 / p.k_nomoto                      # = n_r
+    kp = p.t_nomoto * p.omega_i / p.k_nomoto    # = Izz * omega_i
+    ki = kp * p.omega_i / 5.0
+    t_t = (kp / ki) if ki > 0 else 1.0
     return AntiWindupPID(
-        kff=KFF_R,
-        kp=KP_R,
-        ki=KI_R,
-        kd=KD_R,
-        t_t=T_T_R,
-        u_min=-2 * F_MAX * D_Y,
-        u_max=2 * F_MAX * D_Y,
+        kff=kff, kp=kp, ki=ki, kd=0.0, t_t=t_t,
+        u_min=-p.n_max, u_max=p.n_max,
     )
