@@ -71,7 +71,7 @@ class AntiWindupPID:
 
         u_unsat = (self.kff * ff_input) + (self.kp * error) + self.integral + d_term
         u_sat = max(self.u_min, min(self.u_max, u_unsat))
-
+        self._u_sat = u_sat
         # Integrator inkl. Rueckrechnung
         self.integral += dt * (self.ki * error + (1.0 / self.t_t) * (u_sat - u_unsat))
         self._u_unsat = u_unsat
@@ -85,4 +85,4 @@ class AntiWindupPID:
         die erst NACH ihm entstehen (Schubaufteilung, Motorlimit)."""
         if dt <= 0.0:
             return
-        self.integral += dt * (1.0 / self.t_t) * (u_wirklich - self._u_unsat)
+        self.integral += dt * (1.0 / self.t_t) * (u_wirklich - self._u_sat)

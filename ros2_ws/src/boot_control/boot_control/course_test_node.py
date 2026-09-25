@@ -26,6 +26,7 @@ Aufruf:
 """
 
 import math
+import yaml
 
 import rclpy
 from rclpy.node import Node
@@ -43,13 +44,14 @@ class CourseTestNode(Node):
         self.declare_parameter('psi_c_deg', 90.0)
         self.declare_parameter('u_c', 1.5)
         self.declare_parameter('rate_hz', 10.0)
-        self.declare_parameter('sequenz_deg', [0.0])
+        self.declare_parameter('sequenz_deg_str', '[0.0]')
         self.declare_parameter('sequenz_dauer', 0.0)
         self.declare_parameter('log_periode', 2.0)
 
         self._u_c = float(self.get_parameter('u_c').value)
         self._psi_c = math.radians(float(self.get_parameter('psi_c_deg').value))
-        self._seq = [math.radians(float(v)) for v in self.get_parameter('sequenz_deg').value]
+        raw = self.get_parameter('sequenz_deg_str').value
+        self._seq = [math.radians(float(v)) for v in yaml.safe_load(raw)]
         self._seq_dauer = float(self.get_parameter('sequenz_dauer').value)
         self._log_periode = float(self.get_parameter('log_periode').value)
 

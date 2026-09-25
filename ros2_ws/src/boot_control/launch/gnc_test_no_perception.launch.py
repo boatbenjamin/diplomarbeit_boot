@@ -26,14 +26,15 @@ WICHTIGE AENDERUNGEN ggue. der alten Version
 """
 
 import os
-
+import yaml  # <--- HINZUGEFÜGT
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
-
+from launch_ros.parameter_descriptions import ParameterValue
+from rcl_interfaces.msg import ParameterType
 
 def launch_setup(context, *args, **kwargs):
     pkg = get_package_share_directory('boot_control')
@@ -83,6 +84,16 @@ def launch_setup(context, *args, **kwargs):
     ]
 
     # --- optionaler Testgeber fuer den Sollkurs ---
+    # --- optionaler Testgeber fuer den Sollkurs / Sequenz ---
+    seq_str = LaunchConfiguration('sequenz_deg').perform(context)
+    sequenz_liste = yaml.safe_load(seq_str)
+    # Falls man doch nur einen Einzelwert übergibt, wandeln wir ihn in eine Liste um:
+
+    print(f"DEBUG sequenz_liste = {sequenz_liste!r}  type={type(sequenz_liste)}")
+    print(f"DEBUG sequenz_liste = {sequenz_liste!r}  type={type(sequenz_liste)}")
+    if not isinstance(sequenz_liste, list):
+        sequenz_liste = [float(sequenz_liste)]
+
     aktionen.append(Node(
         package='boot_control',
         executable='course_test',
@@ -92,7 +103,8 @@ def launch_setup(context, *args, **kwargs):
         parameters=[
             params_file,
             {'use_sim_time': use_sim_time},
-            {'psi_c_deg': float(LaunchConfiguration('psi_c_deg').perform(context))},
+            {'sequenz_deg_str': seq_str},
+            {'sequenz_dauer': float(LaunchConfiguration('sequenz_dauer').perform(context))},
             {'u_c': float(LaunchConfiguration('u_c').perform(context))},
         ],
         condition=IfCondition(LaunchConfiguration('start_test')),
@@ -106,11 +118,12 @@ def generate_launch_description():
         DeclareLaunchArgument('use_sim_time', default_value='true'),
         DeclareLaunchArgument('gz_world', default_value='follow_path_task'),
         DeclareLaunchArgument('start_bridge', default_value='false',
-                              description='Eigene ros_gz_bridge starten? '
-                                          'Nur wenn VRX keine mitbringt.'),
+                              description='Eigene ros_gz_bridge starten?'),
         DeclareLaunchArgument('start_test', default_value='true',
                               description='course_test_node mitstarten'),
-        DeclareLaunchArgument('psi_c_deg', default_value='90.0'),
+        # Ersetzt psi_c_deg durch sequenz_deg und sequenz_dauer:
+        DeclareLaunchArgument('sequenz_deg', default_value='[0.0, 90.0, 180.0, -90.0]'),
+        DeclareLaunchArgument('sequenz_dauer', default_value='40.0'),
         DeclareLaunchArgument('u_c', default_value='1.5'),
         OpaqueFunction(function=launch_setup),
     ])
