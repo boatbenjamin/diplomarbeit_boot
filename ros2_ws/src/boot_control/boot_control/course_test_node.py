@@ -42,7 +42,7 @@ class CourseTestNode(Node):
         super().__init__('course_test_node')
 
         self.declare_parameter('psi_c_deg', 90.0)
-        self.declare_parameter('u_c', 1.5)
+        self.declare_parameter('u_c', 2.5)
         self.declare_parameter('rate_hz', 10.0)
         self.declare_parameter('sequenz_deg_str', '[0.0]')
         self.declare_parameter('sequenz_dauer', 0.0)

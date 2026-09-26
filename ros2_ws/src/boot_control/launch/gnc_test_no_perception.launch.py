@@ -1,4 +1,21 @@
+"""
+gnc_test_no_perception.launch.py
+=============================================================
+ILOS-Test ohne Wahrnehmung: Zustandsschaetzer, Regelkaskade,
+VRX-Interface, ILOS und der Lemniskaten-Pfad.
+
+    ros2 launch boot_control gnc_test_no_perception.launch.py
+
+Pfad-Publisher weglassen (z.B. wenn du ihn separat mit anderen
+Koordinaten startest -- sonst gibt es ZWEI Publisher auf /path):
+
+    ros2 launch boot_control gnc_test_no_perception.launch.py pfad:=false
+
+Alle Parameter kommen aus config/params.yaml.
+"""
+
 import os
+
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
@@ -13,19 +30,16 @@ def launch_setup(context, *args, **kwargs):
     use_sim_time = LaunchConfiguration('use_sim_time').perform(context).lower() == 'true'
     gz_world = LaunchConfiguration('gz_world').perform(context)
     start_bridge = LaunchConfiguration('start_bridge').perform(context).lower() == 'true'
+    pfad = LaunchConfiguration('pfad').perform(context).lower() == 'true'
 
-
-    def node(name, executable, extra_params=None):
-        p = [params_file, {'use_sim_time': use_sim_time}]
-        if extra_params:
-            p.append(extra_params)
+    def node(name, executable):
         return Node(
             package='boot_control',
             executable=executable,
             name=name,
             output='screen',
             emulate_tty=True,
-            parameters=p,
+            parameters=[params_file, {'use_sim_time': use_sim_time}],
         )
 
     aktionen = []
@@ -37,7 +51,6 @@ def launch_setup(context, *args, **kwargs):
         gz_gps = f'{base}/gps_wamv_link/sensor/gps_wamv_sensor/navsat'
         ros_imu = '/wamv/sensors/imu/imu/data'
         ros_gps = '/wamv/sensors/gps/gps/fix'
-
         aktionen.append(Node(
             package='ros_gz_bridge',
             executable='parameter_bridge',
@@ -51,19 +64,15 @@ def launch_setup(context, *args, **kwargs):
             output='screen',
         ))
 
-    # Basis-Knoten
     aktionen += [
-        node('wave_filter_node', 'wave_filter_node'),  # Zustandsschätzung
-        node('boat_control_node', 'boat_control'),  # Regelungskaskade
-        node('thrust_to_vrx_node', 'thrust_to_vrx'),  # VRX-Interface
-        node('guidance_ilos_node', 'guidance_ilos_node'),  # ILOS Pfad-Regler
-        node('figure8_path_publisher', 'figure8_path_publisher')  # <-- TIPPFEHLER BEHOBEN
+        node('wave_filter_node', 'wave_filter_node'),      # Zustandsschaetzung
+        node('boat_control_node', 'boat_control'),         # Regelkaskade
+        node('thrust_to_vrx_node', 'thrust_to_vrx'),       # VRX-Interface
+        node('guidance_ilos_node', 'guidance_ilos_node'),  # ILOS
     ]
+    if pfad:
+        aktionen.append(node('figure8_path_publisher', 'figure8_path_publisher'))
 
-    # --- optionaler Test-Knoten für Kurs-Sequenzen ---
-
-
-    # WICHTIG: Die Aktionsliste MUSS zurückgegeben werden!
     return aktionen
 
 
@@ -73,12 +82,7 @@ def generate_launch_description():
         DeclareLaunchArgument('gz_world', default_value='follow_path_task'),
         DeclareLaunchArgument('start_bridge', default_value='false',
                               description='Eigene ros_gz_bridge starten?'),
-
-        # HIER GEÄNDERT: default_value auf 'false' gesetzt, damit der ILOS Regler in Ruhe arbeiten kann
-
-
-        DeclareLaunchArgument('sequenz_deg', default_value='[0.0, 90.0, 180.0, -90.0]'),
-        DeclareLaunchArgument('sequenz_dauer', default_value='40.0'),
-        DeclareLaunchArgument('u_c', default_value='1.5'),
+        DeclareLaunchArgument('pfad', default_value='true',
+                              description='Lemniskaten-Pfad mitstarten?'),
         OpaqueFunction(function=launch_setup),
     ])

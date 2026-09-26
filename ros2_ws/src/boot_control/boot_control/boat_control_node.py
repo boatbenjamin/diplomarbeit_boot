@@ -53,27 +53,30 @@ class BoatControlNode(Node):
         self.declare_parameter('timer_hz', 50.0)
         # --- Plattform (Defaults = VRX WAM-V) ---
         self.declare_parameter('d_y', 1.027135)
-        self.declare_parameter('f_max', 500.0)
-        self.declare_parameter('r_max_deg', 45.0)
-        self.declare_parameter('u_max', 2.2)
+        self.declare_parameter('f_max', 1000.0)
+        self.declare_parameter('r_max_deg', 60.0)
+        self.declare_parameter('u_max', 3.0)
         self.declare_parameter('izz', 700.0)
         self.declare_parameter('n_r', 800.0)
+        self.declare_parameter('n_rr', 800.0)
         self.declare_parameter('masse', 250.0)
         self.declare_parameter('x_u', 100.0)
         self.declare_parameter('x_uu', 150.0)
-        self.declare_parameter('omega_i', 1.5)
-        self.declare_parameter('omega_a_faktor', 5.0)
-        self.declare_parameter('dpsi_max_deg', 25.0)
+        self.declare_parameter('omega_i', 2.5)
+        self.declare_parameter('omega_a_faktor', 2.0)
+        self.declare_parameter('dpsi_max_deg', 35.0)
+        self.declare_parameter('tau_r_ff', 0.2)
         self.declare_parameter('stoppe_bei_mission_completed', True)
 
         g = lambda n: self.get_parameter(n).value
         self._p = BootParameter(
             d_y=float(g('d_y')), f_max=float(g('f_max')),
             r_max=math.radians(float(g('r_max_deg'))), u_max=float(g('u_max')),
-            izz=float(g('izz')), n_r=float(g('n_r')),
+            izz=float(g('izz')), n_r=float(g('n_r')), n_rr=float(g('n_rr')),
             masse=float(g('masse')), x_u=float(g('x_u')), x_uu=float(g('x_uu')),
             omega_i=float(g('omega_i')), omega_a_faktor=float(g('omega_a_faktor')),
             dpsi_max=math.radians(float(g('dpsi_max_deg'))),
+            tau_r_ff=float(g('tau_r_ff')),
         )
         self._stop_on_completed = bool(g('stoppe_bei_mission_completed'))
         self._ctrl = ControlNode(p=self._p)
@@ -159,7 +162,8 @@ class BoatControlNode(Node):
             dt=self._dt, motorstrom=None,
 
         )
-        self.get_logger().info(f'u_sat: {self._ctrl.gierraten_pid._u_sat:.2f}')
+        # (frueher: info-Log mit 50 Hz -> Terminal unlesbar)
+        self.get_logger().debug(f'N_sat: {self._ctrl.gierraten_pid._u_sat:.1f}')
 
         if not safety.ok:
             self.get_logger().warn(f'Safety: {safety.reason}', throttle_duration_sec=2.0)

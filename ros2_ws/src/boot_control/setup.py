@@ -43,6 +43,7 @@ setup(
             'thrust_to_vrx       = boot_control.thrust_to_vrx_node:main',
             # --- Ueberwachung / Test ---
             'watchdog            = boot_control.watchdog_node:main',
+            'course_test         = boot_control.course_test_node:main',
         ],
     },
 )

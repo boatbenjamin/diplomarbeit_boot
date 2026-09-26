@@ -40,10 +40,12 @@ def berechne_schubaufteilung(f_x: float, N: float,
     erreichten Werte -- Eingang fuer das Anti-Windup der Regler.
     """
     # 1. Giermoment hat Vorrang
-    d_f = clip(N / (2.0 * p.d_y), -p.f_max, p.f_max)
 
     # 2. Restspielraum fuer den gemeinsamen Vortriebsanteil
-    spielraum = p.f_max - abs(d_f)
+    # Nach Zeile: d_f = clip(...)
+    F_SURGE_RESERVE = 200.0  # N, immer für Vortrieb reserviert
+    d_f = clip(N / (2.0 * p.d_y), -(p.f_max - F_SURGE_RESERVE), (p.f_max - F_SURGE_RESERVE))
+    spielraum = p.f_max - abs(d_f)  # ≥ 200 N garantiert
     f_x_lim = clip(f_x / 2.0, -spielraum, spielraum)
 
     f_l = f_x_lim - d_f

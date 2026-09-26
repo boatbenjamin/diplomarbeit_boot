@@ -1,166 +1,160 @@
 #!/usr/bin/env python3
+"""
+figure8_path_publisher.py
+=============================================================
+Publiziert eine Lemniskate (liegende Acht) um zwei GPS-Punkte A und B
+als nav_msgs/Path im odom-Frame.
+
+Geometrie
+---------
+Zwei Kreise mit Radius R = loop_radius_factor * |AB| um A und B.
+Bei loop_radius_factor = 0.5 beruehren sich die Kreise genau in der
+Mitte zwischen A und B -- dort geht die Bahn tangential von einem
+Kreis in den anderen ueber (A im Uhrzeigersinn, B gegen den
+Uhrzeigersinn). Die Bahn wird als EINE geschlossene Runde publiziert;
+der ILOS-Knoten erkennt das (Anfang == Ende) und faehrt endlos.
+
+Gemeinsamer Nullpunkt
+---------------------
+Der odom-Ursprung wird vom wave_filter_node uebernommen
+(/state/gps_origin, latched). Frueher hat dieser Knoten seinen eigenen
+ersten GPS-Fix genommen -- startet man ihn spaeter neu, waehrend das
+Boot schon faehrt, war der ganze Pfad um diese Strecke verschoben.
+
+Parameter
+---------
+  lat_A, lon_A, lat_B, lon_B   GPS-Koordinaten der Kreismittelpunkte
+  loop_radius_factor           R = factor * |AB|  (0.5 = Kreise beruehren sich)
+  num_points                   Stuetzpunkte pro Runde
+  umkehren                     Fahrtrichtung umdrehen
+  eigener_ursprung             true: eigenen ersten GPS-Fix nehmen (Fallback,
+                               nur wenn wave_filter_node nicht laeuft)
+"""
+
 import math
+
+import numpy as np
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import (QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy,
+                       qos_profile_sensor_data)
 from nav_msgs.msg import Path
 from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import NavSatFix
-import numpy as np
 
 ERDRADIUS = 6378137.0
+
+LATCHED = QoSProfile(depth=1,
+                     durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+                     reliability=QoSReliabilityPolicy.RELIABLE)
+
+
+def lemniskate(A: np.ndarray, B: np.ndarray, R: float, n: int, umkehren: bool = False):
+    """Eine geschlossene Runde: Halbkreis B -> Vollkreis A -> Halbkreis B."""
+    d = B - A
+    a0 = math.atan2(d[1], d[0])            # Richtung A -> B
+    n_half = max(8, n // 4)
+    n_full = 2 * n_half
+
+    # B gegen Uhrzeigersinn, von der Aussenseite bis zum Beruehrpunkt
+    th = np.linspace(a0, a0 + math.pi, n_half, endpoint=False)
+    xs = [B[0] + R * np.cos(th)]
+    ys = [B[1] + R * np.sin(th)]
+    # A im Uhrzeigersinn, voller Kreis ab dem Beruehrpunkt
+    th = np.linspace(a0, a0 - 2 * math.pi, n_full, endpoint=False)
+    xs.append(A[0] + R * np.cos(th))
+    ys.append(A[1] + R * np.sin(th))
+    # B zweite Haelfte zurueck zur Aussenseite (Endpunkt == Startpunkt)
+    th = np.linspace(a0 + math.pi, a0 + 2 * math.pi, n_half + 1, endpoint=True)
+    xs.append(B[0] + R * np.cos(th))
+    ys.append(B[1] + R * np.sin(th))
+
+    x, y = np.concatenate(xs), np.concatenate(ys)
+    if umkehren:
+        x, y = x[::-1], y[::-1]
+    return x, y
 
 
 class Figure8PathPublisher(Node):
     def __init__(self):
         super().__init__('figure8_path_publisher')
 
-        # Publisher fuer den Pfad
-        self.publisher_ = self.create_publisher(Path, '/path', 10)
+        self.declare_parameter('lat_A', -33.7225690)
+        self.declare_parameter('lon_A', 150.6739884)
+        self.declare_parameter('lat_B', -33.7223690)
+        self.declare_parameter('lon_B', 150.6739884)
+        self.declare_parameter('loop_radius_factor', 0.5)
+        self.declare_parameter('num_points', 400)
+        self.declare_parameter('umkehren', False)
+        self.declare_parameter('eigener_ursprung', False)
 
-        # ==========================================
-        # ECHTE GPS-KOORDINATEN DER BEIDEN PUNKTE
-        # BITTE HIER DIE RICHTIGEN WERTE EINTRAGEN!
-        # ==========================================
-        self.lat_A = -33.72248916822321  # <--- HIER ECHTE LATITUDE VON PUNKT A
-        self.lon_A = 150.67420518427178  # <--- HIER ECHTE LONGITUDE VON PUNKT A
+        g = lambda n: self.get_parameter(n).value
+        self._A_gps = (float(g('lat_A')), float(g('lon_A')))
+        self._B_gps = (float(g('lat_B')), float(g('lon_B')))
 
-        self.lat_B = -33.722027251041276  # <--- HIER ECHTE LATITUDE VON PUNKT B (Bsp-Werte)
-        self.lon_B = 150.67455787110447  # <--- HIER ECHTE LONGITUDE VON PUNKT B
-        # ==========================================
-
-        self._lat0 = None
-        self._lon0 = None
-        self._path_cache = None
         self.path_msg = None
+        self._pub = self.create_publisher(Path, '/path', LATCHED)
 
-        # Subscriber, um exakt denselben Nullpunkt wie der Wave-Filter zu finden
-        self.create_subscription(NavSatFix, '/wamv/sensors/gps/gps/fix',
-                                 self._gps_cb, qos_profile_sensor_data)
+        if bool(g('eigener_ursprung')):
+            self.get_logger().warn('eigener_ursprung=true: Nullpunkt = eigener erster GPS-Fix. '
+                                   'Nur korrekt, wenn gleichzeitig mit wave_filter gestartet!')
+            self._sub = self.create_subscription(NavSatFix, '/wamv/sensors/gps/gps/fix',
+                                                 self._origin_cb, qos_profile_sensor_data)
+        else:
+            self._sub = self.create_subscription(NavSatFix, '/state/gps_origin',
+                                                 self._origin_cb, LATCHED)
 
-        # Timer, um den Pfad periodisch zu veroeffentlichen
-        self.timer = self.create_timer(1.0, self.publish_path)
+        self.create_timer(1.0, self._publish)
+        self.get_logger().info(
+            f'Warte auf GPS-Ursprung ... A=({self._A_gps[0]:.7f}, {self._A_gps[1]:.7f})  '
+            f'B=({self._B_gps[0]:.7f}, {self._B_gps[1]:.7f})')
 
-        self.get_logger().info('Warte auf ersten GPS-Fix, um den odom-Nullpunkt zu setzen...')
-
-    def _gps_cb(self, msg: NavSatFix):
-        if msg.status.status < 0:
-            return
-        if not math.isfinite(msg.latitude) or not math.isfinite(msg.longitude):
-            return
-
-        # Nur den ALLERERSTEN GPS-Fix als gemeinsamen Nullpunkt speichern
-        if self._lat0 is None:
-            self._lat0 = msg.latitude
-            self._lon0 = msg.longitude
-            self.get_logger().info(f'Gemeinsamer Nullpunkt gesetzt: lat={self._lat0:.7f}, lon={self._lon0:.7f}')
-
-            # Jetzt die GPS-Koordinaten von A und B ins lokale odom-System umrechnen
-            # (Exakt dieselbe Mathematik wie in wave_filter_node.py)
-            lat_ref = math.radians(self._lat0)
-
-            ax = ERDRADIUS * math.radians(self.lon_A - self._lon0) * math.cos(lat_ref)
-            ay = ERDRADIUS * math.radians(self.lat_A - self._lat0)
-
-            bx = ERDRADIUS * math.radians(self.lon_B - self._lon0) * math.cos(lat_ref)
-            by = ERDRADIUS * math.radians(self.lat_B - self._lat0)
-
-            A = np.array([ax, ay])
-            B = np.array([bx, by])
-
-            self.get_logger().info(f'Lokale Koordinaten im odom-Frame: A({ax:.2f}, {ay:.2f}), B({bx:.2f}, {by:.2f})')
-
-            # Pfad generieren
-            self.path_msg = self.generate_ros_path(A, B)
-            self.get_logger().info(f'Pfad mit {len(self.path_msg.poses)} Punkten erstellt und bereit.')
-
-    def compute_figure8_path(self,
-                             A: np.ndarray,
-                             B: np.ndarray,
-                             num_points: int = 400,
-                             backward_extension: float = 15.0,
-                             loop_radius_factor: float = 0.5,
-                             num_laps: int = 10):
-        """
-        Liefert (path_x, path_y) fuer die komplette Figure-8-Bahn inkl.
-        Anlaufbahn. Startet am unteren Rand des unteren Kreises (B).
-        """
-        if self._path_cache is not None:
-            return self._path_cache
-
-        d = B - A
-        dist_ab = float(np.hypot(d[0], d[1]))
-        if dist_ab < 1e-3:
-            return np.array([]), np.array([])
-
-        R = loop_radius_factor * dist_ab
-
-        angle_A0 = float(np.arctan2(d[1], d[0]))
-        angle_B0 = angle_A0 + np.pi
-
-        pts_circle = max(8, num_points // max(1, 2 * num_laps))
-        if pts_circle % 2 != 0:
-            pts_circle += 1
-        pts_half = pts_circle // 2
-
-        xs, ys = [], []
-        for _ in range(num_laps):
-            theta_B1 = np.linspace(angle_A0, angle_B0, pts_half, endpoint=False)
-            xs.extend((B[0] + R * np.cos(theta_B1)).tolist())
-            ys.extend((B[1] + R * np.sin(theta_B1)).tolist())
-
-            theta_A = np.linspace(angle_A0, angle_A0 - 2 * np.pi, pts_circle, endpoint=False)
-            xs.extend((A[0] + R * np.cos(theta_A)).tolist())
-            ys.extend((A[1] + R * np.sin(theta_A)).tolist())
-
-            theta_B2 = np.linspace(angle_B0, angle_A0 + 2 * np.pi, pts_half, endpoint=False)
-            xs.extend((B[0] + R * np.cos(theta_B2)).tolist())
-            ys.extend((B[1] + R * np.sin(theta_B2)).tolist())
-
-        path_x = np.array(xs)
-        path_y = np.array(ys)
-
-        # Anlaufbahn: Tangente am allerersten Punkt zurueckverlaengern
-        dx0 = path_x[1] - path_x[0]
-        dy0 = path_y[1] - path_y[0]
-        norm = float(np.hypot(dx0, dy0))
-        if norm > 1e-6:
-            dx0, dy0 = dx0 / norm, dy0 / norm
-            n_ext = max(2, int(backward_extension * 2))
-            ext_dists = np.linspace(-backward_extension, 0, n_ext, endpoint=False)
-            ext_x = path_x[0] + ext_dists * dx0
-            ext_y = path_y[0] + ext_dists * dy0
-            path_x = np.concatenate((ext_x, path_x))
-            path_y = np.concatenate((ext_y, path_y))
-
-        self._path_cache = (path_x, path_y)
-        return self._path_cache
-
-    def generate_ros_path(self, A: np.ndarray, B: np.ndarray) -> Path:
-        """ Wandelt die Numpy-Arrays in eine nav_msgs/Path Nachricht um. """
-        path_x, path_y = self.compute_figure8_path(A, B)
-
-        ros_path = Path()
-        ros_path.header.frame_id = 'odom'
-
-        for x, y in zip(path_x, path_y):
-            pose = PoseStamped()
-            pose.header.frame_id = ros_path.header.frame_id
-
-            pose.pose.position.x = float(x)
-            pose.pose.position.y = float(y)
-            pose.pose.position.z = 0.0
-
-            pose.pose.orientation.w = 1.0
-            ros_path.poses.append(pose)
-
-        return ros_path
-
-    def publish_path(self):
-        """ Published den vorgenerierten Pfad, sobald er berechnet wurde. """
+    # ------------------------------------------------------------------
+    def _origin_cb(self, msg: NavSatFix):
         if self.path_msg is not None:
-            self.path_msg.header.stamp = self.get_clock().now().to_msg()
-            self.publisher_.publish(self.path_msg)
+            return
+        if not (math.isfinite(msg.latitude) and math.isfinite(msg.longitude)):
+            return
+        lat0, lon0 = msg.latitude, msg.longitude
+        c = math.cos(math.radians(lat0))
+
+        def to_xy(lat, lon):
+            return np.array([ERDRADIUS * math.radians(lon - lon0) * c,
+                             ERDRADIUS * math.radians(lat - lat0)])
+
+        A, B = to_xy(*self._A_gps), to_xy(*self._B_gps)
+        dist = float(np.hypot(*(B - A)))
+        if dist < 2.0:
+            self.get_logger().error(f'A und B liegen nur {dist:.2f} m auseinander -- abgebrochen.')
+            return
+
+        R = float(self.get_parameter('loop_radius_factor').value) * dist
+        x, y = lemniskate(A, B, R, int(self.get_parameter('num_points').value),
+                          bool(self.get_parameter('umkehren').value))
+
+        path = Path()
+        path.header.frame_id = 'odom'
+        for xi, yi in zip(x, y):
+            ps = PoseStamped()
+            ps.header.frame_id = 'odom'
+            ps.pose.position.x = float(xi)
+            ps.pose.position.y = float(yi)
+            ps.pose.orientation.w = 1.0
+            path.poses.append(ps)
+        self.path_msg = path
+
+        laenge = float(np.sum(np.hypot(np.diff(x), np.diff(y))))
+        self.get_logger().info(
+            f'Ursprung lat={lat0:.7f} lon={lon0:.7f} -> odom: A=({A[0]:.1f}, {A[1]:.1f}) '
+            f'B=({B[0]:.1f}, {B[1]:.1f}), |AB|={dist:.1f} m, R={R:.1f} m, '
+            f'Rundenlaenge={laenge:.0f} m, {len(x)} Punkte')
+        self._publish()
+
+    def _publish(self):
+        if self.path_msg is None:
+            return
+        self.path_msg.header.stamp = self.get_clock().now().to_msg()
+        self._pub.publish(self.path_msg)
 
 
 def main(args=None):

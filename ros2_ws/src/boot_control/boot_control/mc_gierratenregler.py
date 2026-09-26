@@ -29,7 +29,9 @@ from boot_control.mc_common import BootParameter
 def make_gierraten_pid(p: BootParameter) -> AntiWindupPID:
     """Stellgroesse ist das Giermoment N [N*m]; die Umrechnung auf
     Motorschuebe passiert in mc_schubaufteilung.py."""
-    kff = 1.0 / p.k_nomoto                      # = n_r
+    # Vorsteuerung wird ausserhalb als Moment berechnet
+    # (gier_vorsteuerung: n_r*r + n_rr*|r|*r) -> hier nur Faktor 1
+    kff = 1.0
     kp = p.t_nomoto * p.omega_i / (5*p.k_nomoto)    # = Izz * omega_i, leck mi am oasch lösung, bei Bedarf später ändern
     ki = kp * p.omega_i / 5.0
     t_t = (kp / ki) if ki > 0 else 1.0
