@@ -42,7 +42,8 @@ class BootParameter:
 
     # --- Gierdynamik (1. Ordnung: Izz*r_dot + n_r*r = N) --------------
     izz: float = 700.0         # kg*m^2  (WAM-V base 446 + Motoren/Anbauten)
-    n_r: float = 800.0         # N*m/(rad/s), lineare Gierdaempfung (SimpleHydrodynamics nR)
+    n_r: float = 800.0         # N*m/(rad/s), lineare Gierdaempfung (Hydrodynamics nR)
+    n_rr: float = 0.0          # N*m/(rad/s)^2, quadratische Gierdaempfung (VRX nAbsR = 800)
 
     # --- Laengsdynamik (m*u_dot + x_u*u + x_uu*|u|u = X) --------------
     masse: float = 250.0       # kg
@@ -55,6 +56,7 @@ class BootParameter:
     dpsi_max: float = math.radians(25.0)  # rad/s, Rate des Kurs-Referenzmodells
                                           # bewusst < r_max, damit die Referenz
                                           # fuer das Boot ueberhaupt fahrbar ist
+    tau_r_ff: float = 0.3      # s, Tiefpass auf die Gierraten-Vorsteuerung d(psi_ref)/dt
 
     # --- abgeleitete Groessen ------------------------------------------
     @property
@@ -121,6 +123,12 @@ def clip(value: float, lo: float, hi: float) -> float:
 def rate_limit(target: float, previous: float, max_rate: float, dt: float) -> float:
     delta = clip(target - previous, -max_rate * dt, max_rate * dt)
     return previous + delta
+
+
+def gier_vorsteuerung(r_d: float, p: BootParameter) -> float:
+    """Stationaer noetiges Giermoment fuer die Soll-Gierrate r_d
+    (lineare + quadratische Gierdaempfung wie im VRX-Hydrodynamikmodell)."""
+    return p.n_r * r_d + p.n_rr * abs(r_d) * r_d
 
 
 def widerstand_vorsteuerung(u_d: float, p: BootParameter) -> float:

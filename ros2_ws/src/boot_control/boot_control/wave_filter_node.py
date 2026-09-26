@@ -46,7 +46,8 @@ import math
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import (QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy,
+                       qos_profile_sensor_data)
 from sensor_msgs.msg import NavSatFix, Imu
 from nav_msgs.msg import Odometry
 
@@ -67,12 +68,16 @@ class WaveFilterNode(Node):
         self.declare_parameter('heading_offset_deg', 0.0)  # falls IMU verdreht montiert
         self.declare_parameter('gps_topic', '/wamv/sensors/gps/gps/fix')
         self.declare_parameter('imu_topic', '/wamv/sensors/imu/imu/data')
+        self.declare_parameter('r_plausibel_max', 3.0)   # rad/s, darueber ist der Gyro-Wert Unsinn
+        self.declare_parameter('tau_r', 0.05)            # s, Tiefpass auf die Gierrate
 
         self._rate = float(self.get_parameter('rate_hz').value)
         self._tau_psi = float(self.get_parameter('tau_psi').value)
         self._tau_vel = float(self.get_parameter('tau_vel').value)
         self._tau_pos = float(self.get_parameter('tau_pos').value)
         self._psi_offset = math.radians(float(self.get_parameter('heading_offset_deg').value))
+        self._r_max = float(self.get_parameter('r_plausibel_max').value)
+        self._tau_r = float(self.get_parameter('tau_r').value)
 
         # --- Zustand -------------------------------------------------
         self._lat0 = None
@@ -89,7 +94,11 @@ class WaveFilterNode(Node):
 
         self._psi = None        # gefilterter Kurs [rad]
         self._psi_imu = None    # absolute IMU-Orientierung [rad]
-        self._r = 0.0           # Gierrate [rad/s]
+        self._r = 0.0           # Gierrate [rad/s], gefiltert
+        self._r_roh = 0.0       # letzter Gyro-Wert
+        self._psi_imu_alt = None  # (t, psi) fuer Gierrate aus Orientierungsableitung
+        self._r_aus_orient = 0.0
+        self._gyro_ungueltig = 0
         self._imu_hat_orientierung = True
         self._warned_no_orientation = False
 
@@ -100,6 +109,11 @@ class WaveFilterNode(Node):
         self.create_subscription(Imu, self.get_parameter('imu_topic').value,
                                  self._imu_cb, qos_profile_sensor_data)
         self._pub = self.create_publisher(Odometry, '/state/filtered', 10)
+        # GPS-Nullpunkt fuer alle anderen Knoten (Pfadplaner!) -- latched,
+        # damit auch spaeter gestartete Knoten denselben Ursprung bekommen.
+        latched = QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+                             reliability=QoSReliabilityPolicy.RELIABLE)
+        self._pub_origin = self.create_publisher(NavSatFix, '/state/gps_origin', latched)
         self.create_timer(1.0 / self._rate, self._update)
 
         self.get_logger().info(
@@ -121,6 +135,13 @@ class WaveFilterNode(Node):
             self._lat0, self._lon0 = msg.latitude, msg.longitude
             self.get_logger().info(
                 f'GPS-Ursprung gesetzt: lat={self._lat0:.7f}, lon={self._lon0:.7f}')
+            origin = NavSatFix()
+            origin.header = msg.header
+            origin.header.frame_id = 'odom'
+            origin.status = msg.status
+            origin.latitude, origin.longitude, origin.altitude = \
+                msg.latitude, msg.longitude, msg.altitude
+            self._pub_origin.publish(origin)
 
         lat_ref = math.radians(self._lat0)
         self._raw_x = ERDRADIUS * math.radians(msg.longitude - self._lon0) * math.cos(lat_ref)
@@ -146,7 +167,7 @@ class WaveFilterNode(Node):
 
     # ------------------------------------------------------------------
     def _imu_cb(self, msg: Imu):
-        self._r = msg.angular_velocity.z
+        self._r_roh = msg.angular_velocity.z
 
         # orientation_covariance[0] < 0 heisst laut REP 145: keine Orientierung
         if msg.orientation_covariance[0] < 0.0:
@@ -160,6 +181,19 @@ class WaveFilterNode(Node):
 
         self._imu_hat_orientierung = True
         self._psi_imu = wrap_pi(yaw_from_quaternion(msg.orientation) + self._psi_offset)
+
+        # Zweite, unabhaengige Gierratenquelle: Ableitung der Orientierung.
+        # Dient als Plausibilitaetsreferenz fuer den Gyro.
+        t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        if t <= 0.0:
+            t = self._jetzt()
+        if self._psi_imu_alt is not None:
+            dt = t - self._psi_imu_alt[0]
+            if 1e-3 < dt < 0.5:
+                r_o = wrap_pi(self._psi_imu - self._psi_imu_alt[1]) / dt
+                a = dt / (0.1 + dt)
+                self._r_aus_orient += a * (r_o - self._r_aus_orient)
+        self._psi_imu_alt = (t, self._psi_imu)
 
     # ------------------------------------------------------------------
     def _kurs_stuetzung(self) -> float:
@@ -186,6 +220,23 @@ class WaveFilterNode(Node):
             self.get_logger().warn('Warte auf ersten GPS-Fix ...',
                                    throttle_duration_sec=5.0)
             return
+
+        # --- Gierrate: Gyro, aber nur wenn plausibel ---
+        r_roh = self._r_roh
+        gyro_ok = math.isfinite(r_roh) and abs(r_roh) < self._r_max
+        if gyro_ok and self._psi_imu_alt is not None:
+            # Gyro und Orientierungsableitung duerfen nicht voellig auseinanderlaufen
+            gyro_ok = abs(r_roh - self._r_aus_orient) < 1.0
+        if not gyro_ok:
+            self._gyro_ungueltig += 1
+            r_roh = self._r_aus_orient
+            self.get_logger().warn(
+                f'Gyro unplausibel (r={self._r_roh:.2f} rad/s, aus Orientierung '
+                f'{self._r_aus_orient:.2f}) -- nutze Orientierungsableitung. '
+                f'Pruefe: ros2 topic echo {self.get_parameter("imu_topic").value} '
+                f'--field angular_velocity', throttle_duration_sec=5.0)
+        ar = dt / max(self._tau_r + dt, 1e-9)
+        self._r += ar * (r_roh - self._r)
 
         psi_mess = self._kurs_stuetzung()
         if self._psi is None:

@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Tuple
 
 from boot_control.mc_common import (BootParameter, BootState, DT,
-                                    SafetyStatus, ThrustCommand)
+                                    SafetyStatus, ThrustCommand, gier_vorsteuerung)
 from boot_control.mc_kursregler import CourseController
 from boot_control.mc_gierratenregler import make_gierraten_pid
 from boot_control.mc_tempo_regler import make_tempo_pi, tempo_regelzyklus
@@ -78,7 +78,7 @@ class ControlNode:
 
         # --- Innere Schleife: Gierrate -> Giermoment ---
         N = self.gierraten_pid.step(setpoint=r_d, measurement=x.r,
-                                    ff_input=r_d, dt=dt)
+                                    ff_input=gier_vorsteuerung(r_d, self.p), dt=dt)
 
         # --- Tempo-Schleife -> Laengskraft ---
         X = tempo_regelzyklus(self.tempo_pi, u_c, x.u, dt, self.p)
