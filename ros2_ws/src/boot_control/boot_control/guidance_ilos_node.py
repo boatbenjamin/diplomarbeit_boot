@@ -61,7 +61,7 @@ class GuidanceILOSNode(Node):
         self.create_subscription(Odometry, '/state/filtered', self._state_cb, 10)
         self.create_subscription(Path,     '/path',           self._path_cb,  10)
 
-        self._pub = self.create_publisher(Twist, '/cmd/course', 10)
+        self._pub = self.create_publisher(Twist, '/cmd/course_safe', 10)
 
         hz = self.get_parameter('timer_hz').value
         self.create_timer(1.0 / hz, self._timer_cb)

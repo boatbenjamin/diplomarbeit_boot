@@ -157,7 +157,9 @@ class BoatControlNode(Node):
         thrust, safety = self._ctrl.regelzyklus(
             x=self._state, psi_c_eingang=self._psi_c, u_c_eingang=self._u_c,
             dt=self._dt, motorstrom=None,
+
         )
+        self.get_logger().info(f'u_sat: {self._ctrl.gierraten_pid._u_sat:.2f}')
 
         if not safety.ok:
             self.get_logger().warn(f'Safety: {safety.reason}', throttle_duration_sec=2.0)

@@ -19,9 +19,9 @@ boat_control_node:
 
     # --- Geometrie / Aktorik ---
     d_y: 1.027135          # m, halber Motorabstand (VRX WAM-V)
-    f_max: 500.0           # N je Motor (VRX laesst 2353 N zu)
-    r_max_deg: 45.0        # maximale Soll-Gierrate
-    u_max: 2.2             # m/s (Grenze aus 2*f_max = x_u*u + x_uu*u^2)
+    f_max: 1500.0           # N je Motor (VRX laesst 2353 N zu)
+    r_max_deg: 50.0        # maximale Soll-Gierrate
+    u_max: 3.0            # m/s (Grenze aus 2*f_max = x_u*u + x_uu*u^2)
 
     # --- Gierdynamik: Izz*r_dot + n_r*r = N ---
     izz: 700.0
@@ -37,7 +37,7 @@ boat_control_node:
                            #   -> Kp_r = izz*omega_i = 1050 Nm/(rad/s)
                            #   -> Kff_r = n_r = 800
     omega_a_faktor: 5.0    # aeussere Schleife = omega_i/5 = 0.3 rad/s
-    dpsi_max_deg: 25.0     # Rate des Kurs-Referenzmodells (< r_max!)
+    dpsi_max_deg: 30.0 # Rate des Kurs-Referenzmodells (< r_max!)
 
     stoppe_bei_mission_completed: true
 
@@ -61,14 +61,14 @@ thrust_to_vrx_node:
 
 guidance_ilos_node:
   ros__parameters:
-    delta: 6.0             # m, Lookahead. 2.0 war fuer ein 5 m langes
+    delta: 3.0             # m, Lookahead. 2.0 war fuer ein 5 m langes
                            # WAM-V zu kurz -> Zickzack auf der Geraden.
                            # Faustregel: 2-3 Schiffslaengen.
     sigma: 0.10
     i_max: 3.0
     u_max: 2.0
     u_min: 0.5             # m/s Mindestfahrt (Ruderwirkung erhalten)
-    a_quer_max: 1.0
+    a_quer_max: 2.0
     k3: 1.0
     timer_hz: 10.0
 

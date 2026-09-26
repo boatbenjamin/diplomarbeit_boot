@@ -37,6 +37,7 @@ class AntiWindupPID:
     prev_error: Optional[float] = None
     _d_state: float = 0.0
     _u_unsat: float = 0.0
+    _u_sat: float = 0.0
 
     # ------------------------------------------------------------------
     def reset(self, integral: float = 0.0):

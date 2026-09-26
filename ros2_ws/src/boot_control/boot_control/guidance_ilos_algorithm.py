@@ -20,8 +20,8 @@ import numpy as np
 DELTA = 2.0         # m, Lookahead-Distanz
 SIGMA = 0.10        # Integratorverstaerkung (verhindert stationaere Querablage)
 I_MAX = 3.0         # m, Integrator-Saettigung
-U_MAX = 1.8         # m/s, maximale Fahrt
-A_QUER_MAX = 1.0    # m/s^2, maximale Querbeschleunigung (fuer Kurvengeschwindigkeit)
+U_MAX = 3.0         # m/s, maximale Fahrt
+A_QUER_MAX = 3.0    # m/s^2, maximale Querbeschleunigung (fuer Kurvengeschwindigkeit)
 K3 = 1.0            # Reduktionsfaktor: Fahrt sinkt bei grossem Kursfehler
 U_MIN = 0.5         # m/s, Mindestfahrt -- darunter verliert das Boot
                     #      Ruderwirkung und der Regler kann haengen bleiben

@@ -28,6 +28,7 @@ setup(
             # --- Zustandsschaetzung ---
             'wave_filter_node    = boot_control.wave_filter_node:main',
             'pose_to_odom        = boot_control.pose_to_odom_node:main',
+            'figure8_path_publisher = boot_control.figure8_path_publisher:main',
             # --- Wahrnehmung ---
             'buoy_detector       = boot_control.buoy_detector_node:main',
             'detection_bridge    = boot_control.detection_bridge_node:main',
@@ -35,14 +36,13 @@ setup(
             # --- Mission / Fuehrung ---
             'mission_manager     = boot_control.mission_manager_node:main',
             'course_manager      = boot_control.course_manager_node:main',
-            'guidance_ilos       = boot_control.guidance_ilos_node:main',
+            'guidance_ilos_node = boot_control.guidance_ilos_node:main',
             'collision_avoidance = boot_control.collision_avoidance_node:main',
             # --- Regelung / Aktorik ---
             'boat_control        = boot_control.boat_control_node:main',
             'thrust_to_vrx       = boot_control.thrust_to_vrx_node:main',
             # --- Ueberwachung / Test ---
             'watchdog            = boot_control.watchdog_node:main',
-            'course_test         = boot_control.course_test_node:main',   # NEU
         ],
     },
 )

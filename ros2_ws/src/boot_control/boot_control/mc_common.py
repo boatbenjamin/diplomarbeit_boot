@@ -32,7 +32,7 @@ class BootParameter:
     d_y: float = 1.027135      # m, halber Motorabstand
                                #    VRX WAM-V: 1.027135 (aus wamv_aft_thrusters.xacro)
                                #    reales Boot: 0.15
-    f_max: float = 500.0       # N, Software-Limit je Motor
+    f_max: float = 1500.0       # N, Software-Limit je Motor
                                #    VRX laesst 2353 N zu (max_thrust_cmd),
                                #    500 N ist eine bewusst gesetzte Reserve
     r_max: float = math.radians(45.0)   # rad/s, maximale Soll-Gierrate

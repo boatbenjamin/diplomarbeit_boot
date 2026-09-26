@@ -30,7 +30,7 @@ def make_gierraten_pid(p: BootParameter) -> AntiWindupPID:
     """Stellgroesse ist das Giermoment N [N*m]; die Umrechnung auf
     Motorschuebe passiert in mc_schubaufteilung.py."""
     kff = 1.0 / p.k_nomoto                      # = n_r
-    kp = p.t_nomoto * p.omega_i / p.k_nomoto    # = Izz * omega_i
+    kp = p.t_nomoto * p.omega_i / (5*p.k_nomoto)    # = Izz * omega_i, leck mi am oasch lösung, bei Bedarf später ändern
     ki = kp * p.omega_i / 5.0
     t_t = (kp / ki) if ki > 0 else 1.0
     return AntiWindupPID(
