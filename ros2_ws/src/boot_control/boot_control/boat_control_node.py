@@ -14,7 +14,7 @@ Publications:
 
 Aenderungen ggue. der alten Version
 -----------------------------------
-1. `befehl_empfangen=True` wurde in JEDEM Timer-Takt gesetzt. Damit
+1. `befehl_empfangen=True` wurde in JEDEM Timer-Takt gesetzt. Damit.
    wurde der Watchdog in mc_safety_monitor bei jedem Zyklus
    zurueckgesetzt und konnte nie ausloesen -- bleibt /cmd/course_safe
    aus, fuhr das Boot ewig auf dem letzten Befehl weiter.
