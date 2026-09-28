@@ -1,24 +1,3 @@
-"""
-mc_control_node.py
-=============================================================
-Verdrahtet Kursschleife, Gierratenschleife, Tempo-Schleife,
-Schubaufteilung und Safety-Monitor zu einem Regelzyklus.
-
-Entspricht dem 50-Hz-Timer-Callback auf dem Mikrocontroller.
-Reine Rechenlogik, KEIN rclpy -- die alte Version hatte hier unten
-ein main(), das rclpy.spin() auf eine dataclass losgelassen haette
-(ControlNode ist kein rclpy.node.Node). Das ist entfernt.
-
-Aenderungen ggue. der alten Version
------------------------------------
-1. Alle Plattformparameter kommen aus BootParameter.
-2. Nach der Schubaufteilung wird beiden Reglern das TATSAECHLICH
-   gestellte Moment / die tatsaechliche Kraft zurueckgemeldet
-   (back_calculate) -- dadurch kein Windup mehr gegen die Aktorik.
-3. Die Gierratenschleife bekommt bei Bedarf enger gesetzte Grenzen.
-4. Kein impliziter neuer_befehl() mehr in jedem Zyklus (siehe
-   boat_control_node.py): der Watchdog kann jetzt ueberhaupt ausloesen.
-"""
 
 from dataclasses import dataclass, field
 from typing import Optional, Tuple
@@ -41,7 +20,7 @@ class ControlNode:
     tempo_pi: AntiWindupPID = None
     safety: SafetyMonitor = field(default_factory=SafetyMonitor)
 
-    # Diagnose (fuer /diag-Topics oder Plots)
+    # Zwischenwerte zum Mitloggen (Diagnose-Topics, Plots in der DA)
     letztes_r_d: float = 0.0
     letztes_N: float = 0.0
     letztes_X: float = 0.0
@@ -54,15 +33,18 @@ class ControlNode:
         if self.tempo_pi is None:
             self.tempo_pi = make_tempo_pi(self.p)
 
-    # ------------------------------------------------------------------
+
     def stossfreie_initialisierung(self, x0: BootState):
-        """Beim Uebergang nach 'aktiv' aufrufen."""
+        """Beim Einschalten der Regelung aufrufen.
+
+        Setzt Referenzkurs und Integratoren auf den aktuellen Zustand, damit
+        die Motoren nicht mit einem Sprung losreissen.
+        """
         self.kurs_regler.reset(x0.psi)
-        # Integrator so setzen, dass der aktuelle Zustand gehalten wird
         self.gierraten_pid.reset(integral=0.0)
         self.tempo_pi.reset(integral=0.0)
 
-    # ------------------------------------------------------------------
+
     def regelzyklus(self, x: BootState, psi_c_eingang: float, u_c_eingang: float,
                     dt: float = DT, motorstrom: Optional[float] = None
                     ) -> Tuple[ThrustCommand, SafetyStatus]:
@@ -73,20 +55,23 @@ class ControlNode:
         psi_c, u_c = self.safety.effektiver_befehl(psi_c_eingang, u_c_eingang)
         u_c = max(-self.p.u_max, min(self.p.u_max, u_c))
 
-        # --- Aeussere Schleife: Kurs -> Soll-Gierrate ---
+        # --- Aeussere Schleife: Kursfehler -> Soll-Gierrate ---
         r_d = self.kurs_regler.step(psi_c, x.psi, dt)
 
-        # --- Innere Schleife: Gierrate -> Giermoment ---
+        # --- Innere Schleife: Gierratenfehler -> Giermoment ---
         N = self.gierraten_pid.step(setpoint=r_d, measurement=x.r,
                                     ff_input=gier_vorsteuerung(r_d, self.p), dt=dt)
 
-        # --- Tempo-Schleife -> Laengskraft ---
+        # --- Tempo-Schleife: Fahrtfehler -> Laengskraft ---
         X = tempo_regelzyklus(self.tempo_pi, u_c, x.u, dt, self.p)
 
-        # --- Schubaufteilung MIT Momenten-Prioritaet ---
+        # --- Aufteilen auf die zwei Motoren. Reicht der Schub nicht fuer
+        #     beides, hat das Giermoment Vorrang: lieber langsamer fahren
+        #     als vom Kurs abkommen. ---
         f_l, f_r, n_wirklich, x_wirklich = berechne_schubaufteilung(X, N, self.p)
 
-        # --- Anti-Windup gegen die Aktorikgrenzen ---
+        # --- Den Reglern zurueckmelden, was die Motoren wirklich geschafft
+        #     haben, sonst laufen die Integratoren gegen die Begrenzung an ---
         self.gierraten_pid.back_calculate(n_wirklich, dt)
         self.tempo_pi.back_calculate(x_wirklich, dt)
 

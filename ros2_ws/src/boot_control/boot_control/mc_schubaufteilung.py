@@ -1,31 +1,4 @@
-"""
-mc_schubaufteilung.py
-=============================================================
-Rechnet Laengskraft X [N] und Giermoment N [N*m] in die Einzelschuebe
-F_L / F_R um.
 
-Vorzeichenkonvention (ROS/ENU, Body Frame):
-  linker Motor bei y = +d_y, rechter bei y = -d_y
-  N = d_y * (F_R - F_L)      -> N > 0 dreht nach links (Gegenuhrzeiger)
-  F_L = f_x - N/(2*d_y)
-  F_R = f_x + N/(2*d_y)
-
-DER ENTSCHEIDENDE FEHLER DER ALTEN VERSION
-------------------------------------------
-Die alte Funktion hat F_L und F_R einfach unabhaengig voneinander auf
-+-F_MAX geclippt. Sobald der Vortriebswunsch gross war, lagen BEIDE
-Motoren am Anschlag -- die Differenz zwischen ihnen wurde null und
-damit das Giermoment ebenfalls. Das Boot hatte in dem Moment
-buchstaeblich keine Lenkung mehr und blieb mit konstantem Kursfehler
-stehen (im Test: 8.2 Grad Dauerfehler bei F_L = F_R = 200 N).
-
-Neu: Momenten-Prioritaet (genau das, was der Kommentar in
-mc_control_node.py schon immer behauptet hat).
-  1. Zuerst die Differenz dF = N/(2*d_y) sichern.
-  2. Der verbleibende Spielraum f_max - |dF| geht an den Vortrieb.
-  3. Das tatsaechlich gestellte Moment/Kraft wird zurueckgegeben,
-     damit die Regler ihre Integratoren korrigieren koennen.
-"""
 
 from typing import Tuple
 

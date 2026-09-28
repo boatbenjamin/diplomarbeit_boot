@@ -1,29 +1,4 @@
-"""
-course_test_node.py   (NEU)
-=============================================================
-Testknoten fuer genau den Fall "ich gebe einen Sollkurs vor und
-pruefe, ob er erreicht wird".
 
-Publiziert /cmd/course_safe (Twist) mit festem oder durchlaufendem
-Sollkurs und loggt fortlaufend den Kursfehler. Ersetzt das
-fehleranfaellige manuelle `ros2 topic pub` (dort wird gerne vergessen,
-dass angular.z in RAD erwartet wird und dass ohne -r 10 nur EINMAL
-gesendet wird -- dann greift der Watchdog nach 3 s und das Boot
-stoppt, was wie ein Reglerfehler aussieht).
-
-Parameter:
-  psi_c_deg      Sollkurs in GRAD (wird intern nach rad gewandelt)
-  u_c            Sollfahrt [m/s]
-  rate_hz        Sendetakt (muss > 1/t_halt sein, sonst Watchdog!)
-  sequenz_deg    Optional: Liste von Kursen, die nacheinander
-                 angefahren werden, z.B. [0.0, 90.0, 180.0, -90.0]
-  sequenz_dauer  s je Kurs der Sequenz
-
-Aufruf:
-  ros2 run boot_control course_test --ros-args -p psi_c_deg:=90.0 -p u_c:=1.5
-  ros2 run boot_control course_test --ros-args \
-      -p "sequenz_deg:=[0.0, 90.0, 180.0, -90.0]" -p sequenz_dauer:=40.0
-"""
 
 import math
 import yaml
@@ -74,7 +49,7 @@ class CourseTestNode(Node):
                 f'course_test_node: Sollkurs {math.degrees(self._psi_c):.1f}°, '
                 f'u_c={self._u_c} m/s')
 
-    # ------------------------------------------------------------------
+
     def _state_cb(self, msg: Odometry):
         self._psi_ist = yaw_from_quaternion(msg.pose.pose.orientation)
         self._u_ist = msg.twist.twist.linear.x
@@ -82,7 +57,6 @@ class CourseTestNode(Node):
     def _jetzt(self) -> float:
         return self.get_clock().now().nanoseconds * 1e-9
 
-    # ------------------------------------------------------------------
     def _aktueller_sollkurs(self, t: float) -> float:
         if self._seq_dauer > 0.0 and len(self._seq) > 1:
             idx = int(t / self._seq_dauer) % len(self._seq)

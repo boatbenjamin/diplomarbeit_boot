@@ -1,20 +1,4 @@
-"""
-mc_safety_monitor.py
-=============================================================
-Safety-Monitor / Watchdog auf der Mikrocontroller-Seite.
 
-Ablauf bei ausbleibenden Fahrbefehlen:
-  - bis t_timeout_befehl (0.5 s): Befehl normal ausfuehren
-  - danach bis t_halt (3 s): letzten Kurs/Tempo halten
-  - danach: Stopp (F_L = F_R = 0)
-
-Aenderung ggue. der alten Version
----------------------------------
-Zusaetzlicher Zustandsdaten-Timeout. Bisher wurde nur ueberwacht, ob
-FAHRBEFEHLE ankommen. Faellt aber der Zustandsschaetzer aus, regelt
-die Kaskade munter auf einem eingefrorenen psi/r/u weiter -- das ist
-in der Simulation harmlos, auf dem Wasser nicht.
-"""
 
 import math
 from dataclasses import dataclass
@@ -44,13 +28,17 @@ class SafetyMonitor:
 
     # ------------------------------------------------------------------
     def neuer_befehl(self, psi_c: float, u_c: float):
-        """NUR im Subscriber-Callback von /cmd/course_safe aufrufen."""
+        """Nur im Callback von /cmd/course_safe aufrufen.
+
+        Wird das in jedem Regeltakt aufgerufen, ist die Uhr staendig auf 0
+        und der Watchdog kann nie ausloesen.
+        """
         self.zeit_seit_letztem_befehl = 0.0
         self.letzter_psi_c = psi_c
         self.letzter_u_c = u_c
 
     def neuer_zustand(self):
-        """NUR im Subscriber-Callback von /state/filtered aufrufen."""
+        """Nur im Callback von /state/filtered aufrufen (siehe neuer_befehl)."""
         self.zeit_seit_letztem_zustand = 0.0
 
     # ------------------------------------------------------------------

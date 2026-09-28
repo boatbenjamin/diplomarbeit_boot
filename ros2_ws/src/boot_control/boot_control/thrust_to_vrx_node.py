@@ -1,28 +1,3 @@
-"""
-thrust_to_vrx_node.py
-=============================================================
-Leitet Schubkraefte [N] an die VRX-Thruster weiter.
-
-Subscription : /cmd/thrust  (geometry_msgs/Vector3Stamped)  x=F_L, y=F_R
-Publications : /wamv/thrusters/left/thrust   (std_msgs/Float64) [N]
-               /wamv/thrusters/right/thrust  (std_msgs/Float64) [N]
-
-Aenderungen ggue. der alten Version
------------------------------------
-1. Die Saettigung lag bei 189 N mit dem Kommentar "VRX WAM-V default".
-   Tatsaechlich rechnet VRX
-       max_thrust_cmd = ((x_u + x_uu*v_max)*v_max)/2
-                      = ((51.3 + 72.4*7.71667)*7.71667)/2 = 2353 N
-   je Thruster (wamv_gazebo_thruster_config.xacro). 189 N hat die
-   Regelung also zusaetzlich beschnitten, ohne dass das irgendwo
-   sichtbar war. Neu: Parameter, Default 1000 N.
-2. Watchdog: bleibt /cmd/thrust aus (Knoten abgestuerzt, Kabel weg),
-   wurde bisher gar nichts mehr gesendet -- der gz-Thruster haelt dann
-   den LETZTEN Wert und das Boot faehrt mit Vollgas weiter. Jetzt wird
-   nach cmd_timeout aktiv 0 N gesendet.
-3. Der Node publiziert jetzt zyklisch statt nur im Callback, damit
-   auch bei stockender Regelung ein definierter Wert anliegt.
-"""
 
 import rclpy
 from rclpy.node import Node
@@ -34,8 +9,9 @@ class ThrustToVrxNode(Node):
     def __init__(self):
         super().__init__('thrust_to_vrx_node')
 
-        self.declare_parameter('vrx_thrust_max', 1000.0)   # N je Thruster
-        self.declare_parameter('cmd_timeout', 0.5)         # s
+        self.declare_parameter('vrx_thrust_max', 1000.0)   # N je Thruster,
+        #                                                    VRX selbst laesst 2353 N zu
+        self.declare_parameter('cmd_timeout', 0.5)         # s ohne Befehl -> 0 N
         self.declare_parameter('publish_hz', 50.0)
         self.declare_parameter('left_topic', '/wamv/thrusters/left/thrust')
         self.declare_parameter('right_topic', '/wamv/thrusters/right/thrust')
@@ -60,14 +36,14 @@ class ThrustToVrxNode(Node):
             f'thrust_to_vrx_node gestartet (Limit {self._max:.0f} N je Thruster, '
             f'Timeout {self._timeout:.2f} s).')
 
-    # ------------------------------------------------------------------
+
     def _jetzt(self) -> float:
         return self.get_clock().now().nanoseconds * 1e-9
 
     def _clip(self, v: float) -> float:
         return max(-self._max, min(self._max, float(v)))
 
-    # ------------------------------------------------------------------
+
     def _thrust_cb(self, msg: Vector3Stamped):
         self._f_l = self._clip(msg.vector.x)
         self._f_r = self._clip(msg.vector.y)
@@ -76,7 +52,7 @@ class ThrustToVrxNode(Node):
             self.get_logger().info('/cmd/thrust wieder da.')
             self._timeout_gemeldet = False
 
-    # ------------------------------------------------------------------
+
     def _tick(self):
         t = self._jetzt()
         if self._t_last_cmd is None or (t - self._t_last_cmd) > self._timeout:

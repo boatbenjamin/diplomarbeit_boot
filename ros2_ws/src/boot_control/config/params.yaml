@@ -1,13 +1,16 @@
 # =====================================================================
-# config/params.yaml  -- Parameter fuer den GNC-Stack in VRX (WAM-V)
+# config/params.yaml -- alle Einstellwerte fuer den GNC-Stack in VRX
 # =====================================================================
-# Die Plattformwerte stammen aus dem VRX-Quellcode:
-#   vrx_urdf/wamv_gazebo/urdf/thruster_layouts/wamv_aft_thrusters.xacro
-#     -> Motorpositionen y = +-1.027135 m
-#   vrx_urdf/wamv_gazebo/urdf/dynamics/wamv_gazebo_dynamics_plugin.xacro
-#     -> xU=100, xUU=150, nR=800, nRR=800
-#   vrx_urdf/wamv_description/urdf/wamv_base.urdf.xacro
-#     -> Masse 180 kg, Izz 446 kg m^2 (+ Motoren/Anbauten -> ca. 700)
+# Hier stehen alle Werte, die vom Boot und von der Umgebung abhaengen.
+# Dadurch muss man zum Umstellen auf eine andere Plattform nichts im
+# Code aendern, sondern nur diese Datei.
+#
+# Die Plattformwerte des WAM-V sind direkt aus dem VRX-Quellcode
+# uebernommen:
+#   wamv_aft_thrusters.xacro           -> Motorpositionen y = +-1.027135 m
+#   wamv_gazebo_dynamics_plugin.xacro  -> xU=100, xUU=150, nR=800, nRR=800
+#   wamv_base.urdf.xacro               -> Masse 180 kg, Izz 446 kg m^2
+#                                         (mit Motoren und Anbauten ca. 700)
 #
 # FUER DAS REALE BOOT: nur diesen Block austauschen, kein Code-Eingriff.
 #   d_y: 0.15 / f_max: 200.0 / izz, n_r, masse, x_u, x_uu ausmessen.
@@ -15,34 +18,40 @@
 
 boat_control_node:
   ros__parameters:
-    timer_hz: 50.0
+    timer_hz: 50.0         # Hz, Takt der Regelung
 
-    # --- Geometrie / Aktorik ---
-    d_y: 1.027135          # m, halber Motorabstand (VRX WAM-V)
-    f_max: 1000.0          # N je Motor (VRX laesst 2353 N zu)
-                           #   Sim-Test: 1500 N brachte KEINE bessere Bahn
-    r_max_deg: 60.0        # maximale Soll-Gierrate
-    u_max: 3.0             # m/s (Grenze aus 2*f_max = x_u*u + x_uu*u^2 -> 3.33 m/s)
+    # --- Geometrie und Motoren ---
+    d_y: 1.027135          # m, halber Abstand der beiden Motoren (VRX WAM-V)
+    f_max: 1000.0          # N je Motor. VRX selbst laesst 2353 N zu, im
+                           #   Sim-Test hat 1500 N aber keine bessere Bahn
+                           #   gebracht -> Rest bleibt als Reserve.
+    r_max_deg: 60.0        # deg/s, maximale Soll-Gierrate
+    u_max: 3.0             # m/s, maximale Soll-Fahrt. Physikalische Grenze aus
+                           #   2*f_max = x_u*u + x_uu*u^2 waeren 3.33 m/s.
 
     # --- Gierdynamik: Izz*r_dot + n_r*r + n_rr*|r|*r = N ---
-    izz: 700.0
-    n_r: 800.0
-    n_rr: 800.0            # NEU: VRX hat auch quadratische Gierdaempfung (nAbsR)
+    izz: 700.0             # kg*m^2, Traegheit um die Hochachse
+    n_r: 800.0             # N*m/(rad/s), lineare Gierdaempfung
+    n_rr: 800.0            # N*m/(rad/s)^2, quadratische Gierdaempfung (VRX nAbsR)
 
     # --- Laengsdynamik: m*u_dot + x_u*u + x_uu*|u|u = X ---
-    masse: 250.0
-    x_u: 100.0
-    x_uu: 150.0
+    masse: 250.0           # kg
+    x_u: 100.0             # N/(m/s), linearer Wasserwiderstand
+    x_uu: 150.0            # N/(m/s)^2, quadratischer Wasserwiderstand
 
-    # --- Reglerauslegung (in Offline-Sim getunt, siehe sim/) ---
-    omega_i: 2.5           # rad/s innere Gierratenschleife (war 1.5)
-                           #   -> Kp_r = izz*omega_i = 1750 Nm/(rad/s)
-    omega_a_faktor: 2.0    # aeussere Kursschleife = omega_i/2 = 1.25 rad/s (war 0.5)
-    dpsi_max_deg: 35.0     # Rate des Kurs-Referenzmodells (< r_max!)
-                           #   25 war in der Sim deutlich schlechter
-    tau_r_ff: 0.2          # s, NEU: Tiefpass der Gierraten-Vorsteuerung
+    # --- Reglerauslegung (offline in der Sim getunt, siehe sim/) ---
+    omega_i: 2.5           # rad/s, Bandbreite der inneren Gierratenschleife.
+                           #   Kp_r wird daraus in mc_gierratenregler.py berechnet.
+    omega_a_faktor: 2.0    # aeussere Kursschleife = omega_i / 2 = 1.25 rad/s.
+                           #   Aussen langsamer als innen, sonst arbeiten die
+                           #   beiden Schleifen gegeneinander.
+    dpsi_max_deg: 35.0     # deg/s, so schnell zieht das Referenzmodell den
+                           #   Sollkurs nach. Muss kleiner als r_max sein, sonst
+                           #   verlangt die Referenz mehr als das Boot kann.
+                           #   Mit 25 war die Bahn in der Sim deutlich schlechter.
+    tau_r_ff: 0.2          # s, Tiefpass auf die Gierraten-Vorsteuerung
 
-    stoppe_bei_mission_completed: true
+    stoppe_bei_mission_completed: true   # bei /mission/status = COMPLETED Schub auf 0
 
 wave_filter_node:
   ros__parameters:
@@ -50,67 +59,82 @@ wave_filter_node:
     tau_psi: 0.30          # s, Komplementaerfilter IMU-Orientierung <-> Gyro
     tau_vel: 0.50          # s, Tiefpass auf die GPS-Geschwindigkeit
     tau_pos: 0.20          # s, Tiefpass auf die GPS-Position
-    heading_offset_deg: 0.0
+    heading_offset_deg: 0.0   # Korrektur, falls die IMU verdreht eingebaut ist
     gps_topic: '/wamv/sensors/gps/gps/fix'
     imu_topic: '/wamv/sensors/imu/imu/data'
-    r_plausibel_max: 3.0   # rad/s, NEU: Gyro-Werte darueber werden verworfen
-    tau_r: 0.05            # s, NEU: Tiefpass auf die Gierrate
+    r_plausibel_max: 3.0   # rad/s, groessere Gyro-Werte sind unrealistisch und
+                           #   werden verworfen (Ausreisser)
+    tau_r: 0.05            # s, Tiefpass auf die Gierrate
 
 thrust_to_vrx_node:
   ros__parameters:
     vrx_thrust_max: 2000.0 # N je Thruster (VRX-Limit: 2353 N)
-    cmd_timeout: 0.5       # s ohne /cmd/thrust -> 0 N
+    cmd_timeout: 0.5       # s ohne /cmd/thrust -> aktiv 0 N senden
     publish_hz: 50.0
     left_topic: '/wamv/thrusters/left/thrust'
     right_topic: '/wamv/thrusters/right/thrust'
 
 guidance_ilos_node:
   ros__parameters:
-    delta: 4.0             # m, Lookahead. Sim: 3 m minimal besser, aber
-                           #   Zickzack-Risiko mit echtem Rauschen -> 4 m
-    sigma: 0.3             # Integrator-Gewicht (war 0.1)
-    i_max: 10.0            # m, Integrator-Saettigung (war 3 -> nur ~3 Grad Korrektur!)
-    u_max: 3.0
-    u_min: 0.8             # m/s Mindestfahrt (Ruderwirkung erhalten)
-    a_quer_max: 1.0        # m/s^2 -> Kurvenfahrt u = sqrt(a*R); R=11 m -> 3.3 m/s
-    k3: 1.0                # Fahrtreduktion bei grossem Kursfehler
-    beta_komp: true        # NEU: Schwimmwinkel kompensieren (WAM-V rutscht 20-25 Grad!)
-    beta_max_deg: 30.0
-    tau_beta: 3.0          # s, NEU: Schwimmwinkel-Tiefpass. <1.5 s -> Schlingern
-    t_vorschau: 3.0        # s, Kruemmungs-Vorschau fuer das Bremsen vor Kurven
-    fenster_vor: 20.0      # m, Suchfenster auf dem Pfad
-    fenster_zurueck: 5.0
-    reacquire_dist: 20.0   # m, darueber globale Neusuche
-    timer_hz: 20.0         # war 10
-    cmd_topic: '/cmd/course_safe'   # mit Kollisionsvermeidung: '/cmd/course'
+    delta: 4.0             # m, Lookahead-Distanz: so weit vor dem Boot liegt der
+                           #   Zielpunkt auf dem Pfad. Klein = greift schnell,
+                           #   aber unruhig. In der Sim war 3 m minimal besser,
+                           #   mit echtem Sensorrauschen droht dort Zickzack.
+    sigma: 0.3             # Gewicht des Integralanteils
+    i_max: 10.0            # m, Begrenzung des Integrals. Zu klein gewaehlt bringt
+                           #   er fast nichts: bei 3 m waeren es nur ca. 3 Grad
+                           #   Korrektur.
+    u_max: 3.0             # m/s
+    u_min: 0.8             # m/s, Mindestfahrt. Ohne Fahrt wirkt das Ruder nicht
+                           #   mehr, das Boot waere also nicht lenkbar.
+    a_quer_max: 1.0        # m/s^2, erlaubte Querbeschleunigung in der Kurve.
+                           #   Daraus u = sqrt(a*R), bei R = 11 m -> 3.3 m/s.
+    k3: 1.0                # wie stark bei grossem Kursfehler gebremst wird
+    beta_komp: true        # Schwimmwinkel kompensieren. Der WAM-V rutscht in der
+                           #   Kurve 20-25 Grad seitlich weg!
+    beta_max_deg: 30.0     # deg, Begrenzung des kompensierten Schwimmwinkels
+    tau_beta: 3.0          # s, Tiefpass auf den Schwimmwinkel. Unter 1.5 s faengt
+                           #   das Boot zu schlingern an.
+    t_vorschau: 3.0        # s, so weit wird vorausgeschaut, um vor der Kurve zu
+                           #   bremsen statt erst mitten drin
+    fenster_vor: 20.0      # m, Suchfenster auf dem Pfad nach vorne
+    fenster_zurueck: 5.0   # m, Suchfenster nach hinten
+    reacquire_dist: 20.0   # m, ab dieser Ablage wird der ganze Pfad neu durchsucht
+    timer_hz: 20.0         # Hz, Rechentakt der Fuehrung
+    cmd_topic: '/cmd/course_safe'   # mit Kollisionsvermeidung auf '/cmd/course'
+                                    # umstellen, sonst schreiben zwei Knoten
+                                    # auf dasselbe Topic
 
 figure8_path_publisher:
   ros__parameters:
-    # Kreismittelpunkte der Lemniskate (GPS). Aktuell: A 22 m, B 44 m
-    # noerdlich vom VRX-Spawn. Kreisradius R = loop_radius_factor * |AB|.
+    # Mittelpunkte der beiden Kreise der liegenden Acht, als GPS-Koordinaten.
+    # Aktuell liegt A 22 m und B 44 m noerdlich vom VRX-Startpunkt.
+    # Kreisradius R = loop_radius_factor * |AB|.
     lat_A: -33.7225690
     lon_A: 150.6739884
     lat_B: -33.7223690
     lon_B: 150.6739884
-    loop_radius_factor: 0.5   # 0.5 = Kreise beruehren sich in der Mitte
-    num_points: 400           # Punkte pro Runde (eine geschlossene Runde, ILOS faehrt endlos)
+    loop_radius_factor: 0.5   # 0.5 = die Kreise beruehren sich genau in der Mitte
+    num_points: 400           # Stuetzpunkte pro Runde. Es wird nur eine geschlossene
+                              # Runde publiziert, ILOS faehrt sie endlos weiter.
     umkehren: false           # Fahrtrichtung umdrehen
-    eigener_ursprung: false   # true nur ohne wave_filter_node
+    eigener_ursprung: false   # true nur als Notloesung ohne wave_filter_node
 
 course_manager_node:
   ros__parameters:
-    num_path_points: 400
-    backward_extension: 15.0
+    num_path_points: 400      # Stuetzpunkte des generierten Pfads
+    backward_extension: 15.0  # m, Pfad nach hinten verlaengern (Anfahren)
     loop_radius_factor: 0.5
-    num_laps: 1
-    expected_marks: 2
-    mark_match_gate: 5.0
-    mark_lock_after: 5
+    num_laps: 1               # Anzahl der zu fahrenden Runden
+    expected_marks: 2         # erwartete Anzahl Tore/Bojenpaare
+    mark_match_gate: 5.0      # m, bis zu dieser Distanz gilt eine Boje als dieselbe
+    mark_lock_after: 5        # nach so vielen Sichtungen wird die Boje fix uebernommen
 
 mission_manager_node:
   ros__parameters:
-    acceptance_radius: 4.0
-    min_progress_fraction: 0.95
+    acceptance_radius: 4.0       # m, so nah muss das Boot an einen Wegpunkt
+    min_progress_fraction: 0.95  # so viel vom Pfad muss gefahren sein, damit die
+                                 # Mission als abgeschlossen gilt
 
 collision_avoidance_node:
   ros__parameters:
@@ -118,15 +142,17 @@ collision_avoidance_node:
 
 object_tracker_node:
   ros__parameters:
-    gate_threshold: 3.0
-    max_age_seconds: 2.0
-    m_confirm: 3
-    n_window: 5
-    dt: 0.1
+    gate_threshold: 3.0     # m, bis zu dieser Distanz wird eine Messung einer
+                            #   bestehenden Spur zugeordnet
+    max_age_seconds: 2.0    # s, danach wird eine nicht mehr gesehene Spur verworfen
+    m_confirm: 3            # m von n: so viele Treffer ...
+    n_window: 5             # ... in so vielen Takten, dann gilt die Spur als echt
+    dt: 0.1                 # s, Zeitschritt des Filters
 
 detection_bridge_node:
   ros__parameters:
-    boje_durchmesser: 0.35
+    boje_durchmesser: 0.35  # m, bekannte Bojengroesse -> daraus wird aus der
+                            #   Pixelgroesse die Entfernung geschaetzt
 
 pose_to_odom_node:
   ros__parameters:
@@ -135,8 +161,8 @@ pose_to_odom_node:
 
 course_test_node:
   ros__parameters:
-    psi_c_deg: 90.0
-    u_c: 1.5
+    psi_c_deg: 90.0         # Sollkurs fuer den Sprungversuch
+    u_c: 1.5                # m/s, Sollfahrt dabei
     rate_hz: 10.0
-    sequenz_dauer: 0.0
-    log_periode: 2.0
+    sequenz_dauer: 0.0      # s je Schritt, 0 = Sollwert dauerhaft halten
+    log_periode: 2.0        # s, Abstand der Log-Ausgaben

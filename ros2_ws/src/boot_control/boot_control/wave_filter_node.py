@@ -1,46 +1,4 @@
-"""
-wave_filter_node.py
-=============================================================
-Zustandsschaetzer: GPS + IMU -> /state/filtered (nav_msgs/Odometry)
 
-DER HAUPTFEHLER DER ALTEN VERSION
----------------------------------
-Der Kurs psi wurde aus dem GYROSKOP AUFINTEGRIERT und bei 0.0
-gestartet:
-
-    self.psi += self.r * self.dt
-
-Damit war psi kein absoluter Kurs, sondern nur "Drehung seit
-Knotenstart". Folge:
-  1. Das Boot startet in VRX mit irgendeinem echten Kurs psi_0 != 0.
-     Der Regler bringt den INTEGRIERTEN Kurs auf den Sollwert --
-     der echte Kurs landet bei psi_c + psi_0. Genau das Symptom
-     "Sollkurs wird nicht erreicht".
-  2. Jeder Gyro-Bias driftet unbegrenzt auf. Nach ein paar Minuten
-     stimmt gar nichts mehr, und zwar langsam wandernd, was beim
-     Debuggen besonders unangenehm ist.
-  3. Die 12-Zustands-Wellen-Kalman-Filter-Klasse in
-     wave_filter_algorithm.py wurde dabei nie benutzt.
-
-NEU
----
-  - psi kommt aus der ABSOLUTEN IMU-Orientierung (VRX liefert sie in
-    ENU). Ein Komplementaerfilter mischt die schnelle Gyro-Information
-    dazu, damit Wellenrauschen den Kurs nicht zappeln laesst, aber
-    ohne Driftanteil.
-  - u/v aus GPS-Positionsdifferenz mit echten Zeitstempeln, gefiltert
-    und in den Bootsrahmen gedreht (vorher: Ableitung eines stark
-    verzoegerten Tiefpasses, bei GPS-Stillstand systematisch zu klein).
-  - dt kommt aus der Uhr (use_sim_time-faehig), nicht als Konstante.
-  - Fallback: liefert die IMU keine Orientierung (covariance[0] < 0),
-    wird auf Kurs-ueber-Grund aus GPS umgeschaltet und gewarnt.
-
-Subscriptions:
-  /wamv/sensors/gps/gps/fix   (sensor_msgs/NavSatFix)
-  /wamv/sensors/imu/imu/data  (sensor_msgs/Imu)
-Publication:
-  /state/filtered             (nav_msgs/Odometry)   frame_id = 'odom'
-"""
 
 import math
 
@@ -79,7 +37,7 @@ class WaveFilterNode(Node):
         self._r_max = float(self.get_parameter('r_plausibel_max').value)
         self._tau_r = float(self.get_parameter('tau_r').value)
 
-        # --- Zustand -------------------------------------------------
+
         self._lat0 = None
         self._lon0 = None
         self._raw_x = 0.0
@@ -120,11 +78,11 @@ class WaveFilterNode(Node):
             f'wave_filter_node gestartet ({self._rate:.0f} Hz, '
             f'Kurs aus IMU-Orientierung + Gyro-Komplementaerfilter).')
 
-    # ------------------------------------------------------------------
+
     def _jetzt(self) -> float:
         return self.get_clock().now().nanoseconds * 1e-9
 
-    # ------------------------------------------------------------------
+
     def _gps_cb(self, msg: NavSatFix):
         if msg.status.status < 0:          # STATUS_NO_FIX
             return
@@ -165,7 +123,7 @@ class WaveFilterNode(Node):
             self._x, self._y = self._raw_x, self._raw_y
             self._pos_init = True
 
-    # ------------------------------------------------------------------
+
     def _imu_cb(self, msg: Imu):
         self._r_roh = msg.angular_velocity.z
 
@@ -195,7 +153,7 @@ class WaveFilterNode(Node):
                 self._r_aus_orient += a * (r_o - self._r_aus_orient)
         self._psi_imu_alt = (t, self._psi_imu)
 
-    # ------------------------------------------------------------------
+
     def _kurs_stuetzung(self) -> float:
         """Absoluter Kursmesswert: IMU-Orientierung, sonst Kurs ueber Grund."""
         if self._imu_hat_orientierung and self._psi_imu is not None:
@@ -205,7 +163,7 @@ class WaveFilterNode(Node):
             return math.atan2(self._vy, self._vx)
         return self._psi if self._psi is not None else 0.0
 
-    # ------------------------------------------------------------------
+
     def _update(self):
         t = self._jetzt()
         if self._t_last is None:

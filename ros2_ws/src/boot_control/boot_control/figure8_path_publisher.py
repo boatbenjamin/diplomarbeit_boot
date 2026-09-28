@@ -1,35 +1,4 @@
-#!/usr/bin/env python3
-"""
-figure8_path_publisher.py
-=============================================================
-Publiziert eine Lemniskate (liegende Acht) um zwei GPS-Punkte A und B
-als nav_msgs/Path im odom-Frame.
 
-Geometrie
----------
-Zwei Kreise mit Radius R = loop_radius_factor * |AB| um A und B.
-Bei loop_radius_factor = 0.5 beruehren sich die Kreise genau in der
-Mitte zwischen A und B -- dort geht die Bahn tangential von einem
-Kreis in den anderen ueber (A im Uhrzeigersinn, B gegen den
-Uhrzeigersinn). Die Bahn wird als EINE geschlossene Runde publiziert;
-der ILOS-Knoten erkennt das (Anfang == Ende) und faehrt endlos.
-
-Gemeinsamer Nullpunkt
----------------------
-Der odom-Ursprung wird vom wave_filter_node uebernommen
-(/state/gps_origin, latched). Frueher hat dieser Knoten seinen eigenen
-ersten GPS-Fix genommen -- startet man ihn spaeter neu, waehrend das
-Boot schon faehrt, war der ganze Pfad um diese Strecke verschoben.
-
-Parameter
----------
-  lat_A, lon_A, lat_B, lon_B   GPS-Koordinaten der Kreismittelpunkte
-  loop_radius_factor           R = factor * |AB|  (0.5 = Kreise beruehren sich)
-  num_points                   Stuetzpunkte pro Runde
-  umkehren                     Fahrtrichtung umdrehen
-  eigener_ursprung             true: eigenen ersten GPS-Fix nehmen (Fallback,
-                               nur wenn wave_filter_node nicht laeuft)
-"""
 
 import math
 
@@ -42,29 +11,38 @@ from nav_msgs.msg import Path
 from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import NavSatFix
 
+# Erdradius am Aequator [m], fuer die Umrechnung GPS -> lokale Meter
 ERDRADIUS = 6378137.0
 
+# "latched": die letzte Nachricht bleibt gespeichert und wird jedem neuen
+# Abonnenten sofort geschickt. Sonst verpasst ein spaeter gestarteter Knoten
+# den Pfad und den GPS-Ursprung, weil die nur selten gesendet werden.
 LATCHED = QoSProfile(depth=1,
                      durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
                      reliability=QoSReliabilityPolicy.RELIABLE)
 
 
 def lemniskate(A: np.ndarray, B: np.ndarray, R: float, n: int, umkehren: bool = False):
-    """Eine geschlossene Runde: Halbkreis B -> Vollkreis A -> Halbkreis B."""
+    """Punkte einer Runde: Halbkreis um B, Vollkreis um A, Halbkreis um B.
+
+    A und B sind die Kreismittelpunkte in lokalen Metern, R der Radius und n
+    die ungefaehre Anzahl der Stuetzpunkte. Der letzte Punkt ist gleich dem
+    ersten, damit die Bahn als geschlossen erkannt wird.
+    """
     d = B - A
-    a0 = math.atan2(d[1], d[0])            # Richtung A -> B
+    a0 = math.atan2(d[1], d[0])            # Richtung von A nach B [rad]
     n_half = max(8, n // 4)
     n_full = 2 * n_half
 
-    # B gegen Uhrzeigersinn, von der Aussenseite bis zum Beruehrpunkt
+    # Start aussen bei B, gegen den Uhrzeigersinn bis zum Beruehrpunkt
     th = np.linspace(a0, a0 + math.pi, n_half, endpoint=False)
     xs = [B[0] + R * np.cos(th)]
     ys = [B[1] + R * np.sin(th)]
-    # A im Uhrzeigersinn, voller Kreis ab dem Beruehrpunkt
+    # ganzer Kreis um A, im Uhrzeigersinn, ab dem Beruehrpunkt
     th = np.linspace(a0, a0 - 2 * math.pi, n_full, endpoint=False)
     xs.append(A[0] + R * np.cos(th))
     ys.append(A[1] + R * np.sin(th))
-    # B zweite Haelfte zurueck zur Aussenseite (Endpunkt == Startpunkt)
+    # zweite Haelfte des Kreises um B, zurueck zum Startpunkt
     th = np.linspace(a0 + math.pi, a0 + 2 * math.pi, n_half + 1, endpoint=True)
     xs.append(B[0] + R * np.cos(th))
     ys.append(B[1] + R * np.sin(th))
@@ -109,7 +87,6 @@ class Figure8PathPublisher(Node):
             f'Warte auf GPS-Ursprung ... A=({self._A_gps[0]:.7f}, {self._A_gps[1]:.7f})  '
             f'B=({self._B_gps[0]:.7f}, {self._B_gps[1]:.7f})')
 
-    # ------------------------------------------------------------------
     def _origin_cb(self, msg: NavSatFix):
         if self.path_msg is not None:
             return
@@ -118,12 +95,16 @@ class Figure8PathPublisher(Node):
         lat0, lon0 = msg.latitude, msg.longitude
         c = math.cos(math.radians(lat0))
 
+        # GPS -> lokale Meter. Fuer die kurzen Distanzen hier reicht die
+        # einfache Umrechnung ueber den Erdradius.
         def to_xy(lat, lon):
             return np.array([ERDRADIUS * math.radians(lon - lon0) * c,
                              ERDRADIUS * math.radians(lat - lat0)])
 
         A, B = to_xy(*self._A_gps), to_xy(*self._B_gps)
         dist = float(np.hypot(*(B - A)))
+        # Liegen A und B fast aufeinander, waere der Radius ~0 und die Bahn
+        # nicht fahrbar -> lieber abbrechen als Unsinn publizieren.
         if dist < 2.0:
             self.get_logger().error(f'A und B liegen nur {dist:.2f} m auseinander -- abgebrochen.')
             return

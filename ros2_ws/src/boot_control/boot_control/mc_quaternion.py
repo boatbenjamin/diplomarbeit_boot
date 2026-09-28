@@ -1,17 +1,3 @@
-"""
-mc_quaternion.py
-=============================================================
-Minimale Quaternion-Hilfsfunktionen.
-
-Grund: Alle Knoten haben bisher `tf_transformations` importiert. Das
-Paket ist in vielen ROS-2-Installationen NICHT vorhanden (es kommt
-aus python3-transforms3d und ist keine Abhaengigkeit von ros-base).
-Fehlt es, stirbt der Knoten beim Start mit ModuleNotFoundError --
-in der Launch-Ausgabe sieht das aus wie "Knoten laeuft nicht", ohne
-dass klar wird warum.
-
-Diese zwei Funktionen ersetzen den kompletten Bedarf des Pakets.
-"""
 
 import math
 from geometry_msgs.msg import Quaternion

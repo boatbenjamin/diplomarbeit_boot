@@ -1,34 +1,4 @@
-"""
-guidance_ilos_node.py
-=============================================================
-ROS 2 Node: ILOS-Fuehrungsgesetz (Integral Line-of-Sight)
 
-Subscriptions:
-  /state/filtered  (nav_msgs/Odometry)  -- gefilterter Zustand (x, y, psi, u, v)
-  /path            (nav_msgs/Path)      -- Referenzpfad im odom-Frame
-
-Publications:
-  /cmd/course_safe (geometry_msgs/Twist)
-    linear.x  = u_d   [m/s]  Soll-Fahrt
-    angular.z = psi_d [rad]  Soll-Heading
-  /diag/ilos       (geometry_msgs/Vector3Stamped)
-    x = y_e [m] Querablage, y = psi_d [deg], z = u_d [m/s]
-
-HINWEIS: Publiziert direkt auf /cmd/course_safe (ohne
-collision_avoidance). Fuer den reinen ILOS-Test gewollt; sobald die
-Kollisionsvermeidung mitlaeuft, Topic-Parameter auf /cmd/course setzen.
-
-AENDERUNGEN ggue. der alten Version
------------------------------------
-1. Das Integral wurde bei JEDER /path-Nachricht (1 Hz) zurueckgesetzt
-   -> der I-Anteil konnte nie wirken. Jetzt nur, wenn sich der Pfad
-   wirklich aendert.
-2. Pfadverfolgung mit Fortschritt (PfadTracker) statt globaler
-   argmin-Suche; geschlossene Pfade werden endlos gefahren.
-3. Schwimmwinkel-Kompensation (v aus /state/filtered).
-4. Wartet auf den ersten Zustand, bevor gerechnet wird.
-5. Diagnose-Topic + 1-Hz-Log.
-"""
 
 import math
 
@@ -47,21 +17,22 @@ class GuidanceILOSNode(Node):
     def __init__(self):
         super().__init__('guidance_ilos_node')
 
-        self.declare_parameter('delta', 4.0)           # m, Lookahead
-        self.declare_parameter('sigma', 0.3)           # Integrator-Gewicht
-        self.declare_parameter('i_max', 10.0)          # m, Integrator-Saettigung
-        self.declare_parameter('u_max', 3.0)           # m/s
-        self.declare_parameter('u_min', 0.8)           # m/s, Mindestfahrt
-        self.declare_parameter('a_quer_max', 1.0)      # m/s^2
-        self.declare_parameter('k3', 1.0)              # Fahrtreduktion bei Kursfehler
+        # Erklaerung der einzelnen Werte siehe config/params.yaml
+        self.declare_parameter('delta', 4.0)           # m, Lookahead-Distanz
+        self.declare_parameter('sigma', 0.3)           # Gewicht des Integralanteils
+        self.declare_parameter('i_max', 10.0)          # m, Begrenzung des Integrals
+        self.declare_parameter('u_max', 3.0)           # m/s, maximale Fahrt
+        self.declare_parameter('u_min', 0.8)           # m/s, Mindestfahrt (Lenkbarkeit)
+        self.declare_parameter('a_quer_max', 1.0)      # m/s^2, erlaubte Querbeschleunigung
+        self.declare_parameter('k3', 1.0)              # wie stark bei Kursfehler gebremst wird
         self.declare_parameter('beta_komp', True)      # Schwimmwinkel kompensieren
-        self.declare_parameter('beta_max_deg', 30.0)
-        self.declare_parameter('tau_beta', 3.0)        # s, Tiefpass Schwimmwinkel
-        self.declare_parameter('t_vorschau', 3.0)      # s, Kurven-Vorschau
-        self.declare_parameter('fenster_vor', 20.0)    # m, Suchfenster vorwaerts
-        self.declare_parameter('fenster_zurueck', 5.0) # m, Suchfenster rueckwaerts
-        self.declare_parameter('reacquire_dist', 20.0) # m, globale Neusuche
-        self.declare_parameter('timer_hz', 20.0)
+        self.declare_parameter('beta_max_deg', 30.0)   # deg, Begrenzung des Schwimmwinkels
+        self.declare_parameter('tau_beta', 3.0)        # s, Tiefpass auf den Schwimmwinkel
+        self.declare_parameter('t_vorschau', 3.0)      # s, wie weit vorausgeschaut wird
+        self.declare_parameter('fenster_vor', 20.0)    # m, Suchfenster nach vorne
+        self.declare_parameter('fenster_zurueck', 5.0) # m, Suchfenster nach hinten
+        self.declare_parameter('reacquire_dist', 20.0) # m, ab hier ganzen Pfad durchsuchen
+        self.declare_parameter('timer_hz', 20.0)       # Hz, Rechentakt der Fuehrung
         self.declare_parameter('cmd_topic', '/cmd/course_safe')
 
         g = lambda n: self.get_parameter(n).value
@@ -99,7 +70,7 @@ class GuidanceILOSNode(Node):
             f'sigma={self._guidance.sigma}, u_max={self._guidance.u_max} m/s, '
             f'beta_komp={self._guidance.beta_komp}')
 
-    # ------------------------------------------------------------------
+
     def _state_cb(self, msg: Odometry):
         self._pos[0] = msg.pose.pose.position.x
         self._pos[1] = msg.pose.pose.position.y
@@ -113,7 +84,9 @@ class GuidanceILOSNode(Node):
             return
         xs = np.array([p.pose.position.x for p in msg.poses])
         ys = np.array([p.pose.position.y for p in msg.poses])
-        # Signatur: nur bei echter Aenderung neu aufsetzen
+        # Fingerabdruck des Pfads. Der Pfad wird zyklisch gesendet, ohne diesen
+        # Vergleich wuerde bei jeder Nachricht der Tracker neu aufgesetzt und
+        # der Integralanteil zurueckgesetzt -- er koennte also nie wirken.
         sig = (len(xs), round(float(xs[0]), 2), round(float(ys[0]), 2),
                round(float(xs[-1]), 2), round(float(ys[-1]), 2),
                round(float(xs.sum()), 1), round(float(ys.sum()), 1))
@@ -131,7 +104,7 @@ class GuidanceILOSNode(Node):
             f'Neuer Pfad: {len(xs)} Punkte, {tracker.laenge:.1f} m, '
             f'{"geschlossen (endlos)" if tracker.closed else "offen"}')
 
-    # ------------------------------------------------------------------
+
     def _timer_cb(self):
         if self._tracker is None:
             self.get_logger().warn('Kein /path empfangen -- ILOS inaktiv.',
@@ -150,13 +123,16 @@ class GuidanceILOSNode(Node):
         if not (1e-4 < dt < 1.0):
             return
 
+        # Wo liegen wir relativ zum Pfad?
         y_e, pi_h, _ = self._tracker.update(
             self._pos, self._fenster_zurueck, self._fenster_vor, self._reacquire)
 
         if self._tracker.am_ende:
+            # offener Pfad zu Ende: stehen bleiben und Kurs halten
             u_d, psi_d = 0.0, self._psi
         else:
             psi_d = self._guidance.update_heading(y_e, pi_h, self._u, self._v, dt)
+            # Vorschaustrecke = Fahrt * Vorschauzeit, aber mindestens 5 m
             u_ref = max(abs(self._u), self._guidance.u_min)
             k_max = self._tracker.kappa_vorschau(max(5.0, u_ref * self._guidance.t_vorschau))
             u_d = self._guidance.calculate_speed(k_max, self._psi, psi_d)
