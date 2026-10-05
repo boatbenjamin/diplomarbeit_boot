@@ -26,6 +26,24 @@ AENDERUNGEN ggue. der alten Version
    VOR der Kurve, nicht erst drin.
 5. Integrator-Grenze sinnvoll: die alte Kombination sigma=0.1,
    i_max=3 erlaubte maximal atan(0.3/Delta) ~ 3 Grad Korrektur.
+6. Kruemmungs-Vorhalt (t_vorhalt): statt des Pfadwinkels am Lotpunkt
+   wird der Pfadwinkel an s + u*t_vorhalt verwendet:
+       chi_d = pi_h(s + u*t_vorhalt) - atan2(y_e + sigma*y_int, Delta)
+   Das gleicht die Verzoegerung der Kurs-/Gierratenkaskade aus (das Boot
+   faehrt sonst in Kurven dauerhaft aussen) und nimmt den Wechsel der
+   Kurvenrichtung an der Lemniskaten-Kreuzung vorweg.
+   t_vorhalt = 0 -> exakt das alte Verhalten.
+7. Schwimmwinkel-Vorsteuerung (k_beta): Das Rutschen in der Kurve wird
+   aus der Pfadkruemmung vorhergesagt,
+       beta_ff = -k_beta * u * kappa      (kappa > 0 = Linkskurve)
+   und komplementaer mit der Messung kombiniert:
+       beta = TP(beta_mess) + (beta_ff - TP(beta_ff))
+   Stationaer zaehlt nur die Messung (k_beta muss nicht exakt stimmen),
+   schnelle Aenderungen -- der Vorzeichenwechsel an der Lemniskaten-
+   Kreuzung -- kommen aus der Vorhersage statt mit tau_beta verzoegert.
+   k_beta = 0 -> exakt das alte Verhalten.
+   VRX-Messung vorher (Delta=8, tau_beta=1): ~1.3-1.7 m aussen in den
+   Schleifen, ~2 m Spitze kurz nach jeder Kreuzung.
 """
 
 import math
@@ -155,6 +173,25 @@ class PfadTracker:
         y_e = -(px - qx) * math.sin(pi_h) + (py - qy) * math.cos(pi_h)
         return y_e, pi_h, float(self.seg_kappa[i])
 
+    def pfadwinkel_bei(self, s: float) -> float:
+        """Pfadrichtung [rad] an der Bogenlaenge s (stetig interpoliert)."""
+        if not self.closed:
+            s = min(max(s, 0.0), self.laenge)
+        i = self._seg_index(s)
+        t = (s % self.laenge if self.closed else s) - self.s0[i]
+        t = t / max(self.seg_len[i], 1e-9)
+        if t < 0.5:
+            j = i - 1 if (i > 0 or self.closed) else i
+            w = 0.5 + t
+        else:
+            j = (i + 1) % self.n_seg if (i < self.n_seg - 1 or self.closed) else i
+            w = 1.5 - t
+        return wrap_pi(self.seg_psi[j] + w * wrap_pi(self.seg_psi[i] - self.seg_psi[j]))
+
+    def kappa_bei(self, s: float) -> float:
+        """Vorzeichenbehaftete Kruemmung [1/m] an der Bogenlaenge s (>0 = links)."""
+        return float(self.seg_kappa[self._seg_index(s)])
+
     def kappa_vorschau(self, strecke: float) -> float:
         """Groesste |Kruemmung| auf den naechsten `strecke` Metern."""
         if self.idx is None:
@@ -179,7 +216,8 @@ class ILOSGuidance:
     def __init__(self, delta: float = 4.0, sigma: float = 0.3, i_max: float = 10.0,
                  u_max: float = 3.0, u_min: float = 0.8, a_quer_max: float = 1.0,
                  k3: float = 1.0, beta_komp: bool = True, beta_max_deg: float = 30.0,
-                 u_beta_min: float = 0.8, t_vorschau: float = 3.0, tau_beta: float = 3.0):
+                 u_beta_min: float = 0.8, t_vorschau: float = 3.0, tau_beta: float = 3.0,
+                 t_vorhalt: float = 0.0, k_beta: float = 0.0):
         self.delta = delta
         self.sigma = sigma
         self.i_max = i_max
@@ -192,14 +230,22 @@ class ILOSGuidance:
         self.u_beta_min = u_beta_min
         self.t_vorschau = t_vorschau
         self.tau_beta = tau_beta
+        self.t_vorhalt = t_vorhalt
+        self.k_beta = k_beta
+        self.beta_mess_tp: float = 0.0     # tiefpassgefilterte Messung
+        self.beta_ff_tp: float = 0.0       # tiefpassgefilterte Vorhersage
+        self.beta_ff: float = 0.0          # Vorhersage (Diagnose)
         self.y_int: float = 0.0
         self.beta: float = 0.0
 
     def reset_integral(self) -> None:
         self.y_int = 0.0
 
-    def update_heading(self, y_e: float, pi_h: float, u: float, v: float, dt: float) -> float:
-        """Soll-Heading psi_d [rad] aus Querablage, Pfadwinkel und Schwimmwinkel."""
+    def update_heading(self, y_e: float, pi_h: float, u: float, v: float, dt: float,
+                       kappa: float = 0.0) -> float:
+        """Soll-Heading psi_d [rad] aus Querablage, Pfadwinkel und Schwimmwinkel.
+        pi_h: Pfadwinkel -- mit Kruemmungs-Vorhalt bereits an s + u*t_vorhalt
+        (siehe GuidanceILOSNode / PfadTracker.pfadwinkel_bei)."""
         # Integrator nur nahe am Pfad -- beim Anfahren von weit weg wuerde er
         # sonst voll aufladen und danach ueberschwingen.
         if abs(y_e) < 2.0 * self.delta:
@@ -213,12 +259,16 @@ class ILOSGuidance:
         # Geschwindigkeitsvektor zunaechst stehen -> gemessenes beta aendert
         # sich sofort um -dpsi. Ungefiltert rueckgekoppelt ist das eine
         # Mitkopplung mit Verstaerkung ~1 (in der Simulation: Schlingern).
-        if self.beta_komp and u > self.u_beta_min:
-            b = max(-self.beta_max, min(self.beta_max, math.atan2(v, u)))
-        else:
-            b = 0.0
+        aktiv = self.beta_komp and u > self.u_beta_min
+        b = max(-self.beta_max, min(self.beta_max, math.atan2(v, u))) if aktiv else 0.0
+        b_ff = max(-self.beta_max, min(self.beta_max, -self.k_beta * u * kappa)) if aktiv else 0.0
+        self.beta_ff = b_ff
         a = dt / (self.tau_beta + dt)
-        self.beta += a * (b - self.beta)
+        self.beta_mess_tp += a * (b - self.beta_mess_tp)
+        self.beta_ff_tp += a * (b_ff - self.beta_ff_tp)
+        # komplementaer: langsam aus der Messung, schnell aus der Vorhersage
+        self.beta = max(-self.beta_max, min(self.beta_max,
+                        self.beta_mess_tp + (b_ff - self.beta_ff_tp)))
         return wrap_pi(chi_d - self.beta)
 
     def calculate_speed(self, kappa_max: float, psi: float, psi_d: float) -> float:

@@ -2,17 +2,24 @@
 """
 figure8_path_publisher.py
 =============================================================
-Publiziert eine Lemniskate (liegende Acht) um zwei GPS-Punkte A und B
+Publiziert eine Bernoulli-Lemniskate (liegende Acht) um zwei GPS-Punkte A und B
 als nav_msgs/Path im odom-Frame.
 
 Geometrie
 ---------
-Zwei Kreise mit Radius R = loop_radius_factor * |AB| um A und B.
-Bei loop_radius_factor = 0.5 beruehren sich die Kreise genau in der
-Mitte zwischen A und B -- dort geht die Bahn tangential von einem
-Kreis in den anderen ueber (A im Uhrzeigersinn, B gegen den
-Uhrzeigersinn). Die Bahn wird als EINE geschlossene Runde publiziert;
-der ILOS-Knoten erkennt das (Anfang == Ende) und faehrt endlos.
+Echte Lemniskate von Bernoulli (keine zwei Kreise mehr):
+    x = a*cos(t) / (1 + sin^2 t),   y = a*sin(t)*cos(t) / (1 + sin^2 t)
+Die Kruemmung ist ueberall stetig, im Kreuzungspunkt (Mitte zwischen
+A und B) ist sie exakt 0 (Wendepunkt) -> kein Kruemmungssprung mehr.
+Kruemmung kappa = 3*r/a^2 (r = Abstand zur Mitte), d.h. die engste
+Stelle liegt an den Schleifenspitzen: R_min = a/3.
+
+Halbachse a = |AB|/2 + R mit R = loop_radius_factor * |AB|, d.h. die
+Lemniskate reicht genau so weit nach aussen wie frueher die Kreise.
+Fahrtrichtung wie bisher: Schleife um A im Uhrzeigersinn, um B gegen
+den Uhrzeigersinn. Die Punkte sind gleichabstaendig (Bogenlaenge).
+Die Bahn wird als EINE geschlossene Runde publiziert; der ILOS-Knoten
+erkennt das (Anfang == Ende) und faehrt endlos.
 
 Gemeinsamer Nullpunkt
 ---------------------
@@ -23,8 +30,8 @@ Boot schon faehrt, war der ganze Pfad um diese Strecke verschoben.
 
 Parameter
 ---------
-  lat_A, lon_A, lat_B, lon_B   GPS-Koordinaten der Kreismittelpunkte
-  loop_radius_factor           R = factor * |AB|  (0.5 = Kreise beruehren sich)
+  lat_A, lon_A, lat_B, lon_B   GPS-Punkte im Inneren der beiden Schleifen
+  loop_radius_factor           Halbachse a = |AB|/2 + factor*|AB|  (R_min = a/3)
   num_points                   Stuetzpunkte pro Runde
   umkehren                     Fahrtrichtung umdrehen
   eigener_ursprung             true: eigenen ersten GPS-Fix nehmen (Fallback,
@@ -50,26 +57,27 @@ LATCHED = QoSProfile(depth=1,
 
 
 def lemniskate(A: np.ndarray, B: np.ndarray, R: float, n: int, umkehren: bool = False):
-    """Eine geschlossene Runde: Halbkreis B -> Vollkreis A -> Halbkreis B."""
+    """Eine geschlossene Runde einer Bernoulli-Lemniskate, Start an der Aussenseite von B."""
     d = B - A
-    a0 = math.atan2(d[1], d[0])            # Richtung A -> B
-    n_half = max(8, n // 4)
-    n_full = 2 * n_half
+    dist = float(np.hypot(d[0], d[1]))
+    e1 = d / dist                          # Einheitsvektor A -> B
+    e2 = np.array([-e1[1], e1[0]])         # 90 Grad gegen Uhrzeigersinn
+    M = 0.5 * (A + B)                      # Kreuzungspunkt
+    a = 0.5 * dist + R                     # Halbachse (gleiche Ausdehnung wie frueher)
 
-    # B gegen Uhrzeigersinn, von der Aussenseite bis zum Beruehrpunkt
-    th = np.linspace(a0, a0 + math.pi, n_half, endpoint=False)
-    xs = [B[0] + R * np.cos(th)]
-    ys = [B[1] + R * np.sin(th)]
-    # A im Uhrzeigersinn, voller Kreis ab dem Beruehrpunkt
-    th = np.linspace(a0, a0 - 2 * math.pi, n_full, endpoint=False)
-    xs.append(A[0] + R * np.cos(th))
-    ys.append(A[1] + R * np.sin(th))
-    # B zweite Haelfte zurueck zur Aussenseite (Endpunkt == Startpunkt)
-    th = np.linspace(a0 + math.pi, a0 + 2 * math.pi, n_half + 1, endpoint=True)
-    xs.append(B[0] + R * np.cos(th))
-    ys.append(B[1] + R * np.sin(th))
+    # fein abtasten, dann auf gleiche Bogenlaenge umrechnen
+    t = np.linspace(0.0, 2.0 * math.pi, 50 * n + 1)
+    nenner = 1.0 + np.sin(t) ** 2
+    u = a * np.cos(t) / nenner             # entlang A -> B
+    v = a * np.sin(t) * np.cos(t) / nenner # quer dazu
+    s = np.concatenate(([0.0], np.cumsum(np.hypot(np.diff(u), np.diff(v)))))
+    s_neu = np.linspace(0.0, s[-1], n + 1)
+    u = np.interp(s_neu, s, u)
+    v = np.interp(s_neu, s, v)
 
-    x, y = np.concatenate(xs), np.concatenate(ys)
+    x = M[0] + u * e1[0] + v * e2[0]
+    y = M[1] + u * e1[1] + v * e2[1]
+    x[-1], y[-1] = x[0], y[0]              # Endpunkt == Startpunkt
     if umkehren:
         x, y = x[::-1], y[::-1]
     return x, y

@@ -28,6 +28,9 @@ AENDERUNGEN ggue. der alten Version
 3. Schwimmwinkel-Kompensation (v aus /state/filtered).
 4. Wartet auf den ersten Zustand, bevor gerechnet wird.
 5. Diagnose-Topic + 1-Hz-Log.
+6. Kruemmungs-Vorhalt: Parameter t_vorhalt [s] (0 = aus), siehe
+   guidance_ilos_algorithm.py.
+7. Schwimmwinkel-Vorsteuerung: Parameter k_beta [s] (0 = aus).
 """
 
 import math
@@ -58,6 +61,8 @@ class GuidanceILOSNode(Node):
         self.declare_parameter('beta_max_deg', 30.0)
         self.declare_parameter('tau_beta', 3.0)        # s, Tiefpass Schwimmwinkel
         self.declare_parameter('t_vorschau', 3.0)      # s, Kurven-Vorschau
+        self.declare_parameter('t_vorhalt', 0.0)       # s, Kruemmungs-Vorhalt (0 = aus)
+        self.declare_parameter('k_beta', 0.0)          # s, Schwimmwinkel-Vorsteuerung (0 = aus)
         self.declare_parameter('fenster_vor', 20.0)    # m, Suchfenster vorwaerts
         self.declare_parameter('fenster_zurueck', 5.0) # m, Suchfenster rueckwaerts
         self.declare_parameter('reacquire_dist', 20.0) # m, globale Neusuche
@@ -71,6 +76,7 @@ class GuidanceILOSNode(Node):
             a_quer_max=float(g('a_quer_max')), k3=float(g('k3')),
             beta_komp=bool(g('beta_komp')), beta_max_deg=float(g('beta_max_deg')),
             t_vorschau=float(g('t_vorschau')), tau_beta=float(g('tau_beta')),
+            t_vorhalt=float(g('t_vorhalt')), k_beta=float(g('k_beta')),
         )
         self._fenster_vor = float(g('fenster_vor'))
         self._fenster_zurueck = float(g('fenster_zurueck'))
@@ -97,7 +103,7 @@ class GuidanceILOSNode(Node):
         self.get_logger().info(
             f'guidance_ilos_node gestartet: Delta={self._guidance.delta} m, '
             f'sigma={self._guidance.sigma}, u_max={self._guidance.u_max} m/s, '
-            f'beta_komp={self._guidance.beta_komp}')
+            f'beta_komp={self._guidance.beta_komp}, t_vorhalt={self._guidance.t_vorhalt} s, k_beta={self._guidance.k_beta} s')
 
     # ------------------------------------------------------------------
     def _state_cb(self, msg: Odometry):
@@ -152,11 +158,16 @@ class GuidanceILOSNode(Node):
 
         y_e, pi_h, _ = self._tracker.update(
             self._pos, self._fenster_zurueck, self._fenster_vor, self._reacquire)
+        # Kruemmungs-Vorhalt: Pfadrichtung (und Kruemmung) ein Stueck voraus
+        s_vor = self._tracker.s + max(self._u, 0.0) * self._guidance.t_vorhalt
+        if self._guidance.t_vorhalt > 0.0:
+            pi_h = self._tracker.pfadwinkel_bei(s_vor)
+        kappa_vor = self._tracker.kappa_bei(s_vor)
 
         if self._tracker.am_ende:
             u_d, psi_d = 0.0, self._psi
         else:
-            psi_d = self._guidance.update_heading(y_e, pi_h, self._u, self._v, dt)
+            psi_d = self._guidance.update_heading(y_e, pi_h, self._u, self._v, dt, kappa_vor)
             u_ref = max(abs(self._u), self._guidance.u_min)
             k_max = self._tracker.kappa_vorschau(max(5.0, u_ref * self._guidance.t_vorschau))
             u_d = self._guidance.calculate_speed(k_max, self._psi, psi_d)
@@ -177,7 +188,8 @@ class GuidanceILOSNode(Node):
         self.get_logger().info(
             f'y_e={y_e:+5.2f} m  s={self._tracker.s:6.1f}/{self._tracker.laenge:.0f} m '
             f'(Runde {self._tracker.runden + 1})  psi_d={math.degrees(psi_d):+6.1f}°  '
-            f'psi={math.degrees(self._psi):+6.1f}°  beta={math.degrees(self._guidance.beta):+5.1f}°  '
+            f'psi={math.degrees(self._psi):+6.1f}°  beta={math.degrees(self._guidance.beta):+5.1f}° '
+            f'(ff {math.degrees(self._guidance.beta_ff):+5.1f}°, kappa={kappa_vor:+.3f})  '
             f'y_int={self._guidance.y_int:+5.2f}  u_d={u_d:.2f}  u={self._u:.2f}',
             throttle_duration_sec=1.0)
 

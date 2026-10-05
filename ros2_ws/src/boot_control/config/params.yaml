@@ -19,10 +19,10 @@ boat_control_node:
 
     # --- Geometrie / Aktorik ---
     d_y: 1.027135          # m, halber Motorabstand (VRX WAM-V)
-    f_max: 1000.0          # N je Motor (VRX laesst 2353 N zu)
+    f_max: 1500.0          # N je Motor (VRX laesst 2353 N zu)
                            #   Sim-Test: 1500 N brachte KEINE bessere Bahn
     r_max_deg: 60.0        # maximale Soll-Gierrate
-    u_max: 3.0             # m/s (Grenze aus 2*f_max = x_u*u + x_uu*u^2 -> 3.33 m/s)
+    u_max: 3.5             # m/s (Grenze aus 2*f_max = x_u*u + x_uu*u^2 -> 3.33 m/s)
 
     # --- Gierdynamik: Izz*r_dot + n_r*r + n_rr*|r|*r = N ---
     izz: 700.0
@@ -35,12 +35,12 @@ boat_control_node:
     x_uu: 150.0
 
     # --- Reglerauslegung (in Offline-Sim getunt, siehe sim/) ---
-    omega_i: 2.5           # rad/s innere Gierratenschleife (war 1.5)
+    omega_i: 3.5           # rad/s innere Gierratenschleife (war 1.5)
                            #   -> Kp_r = izz*omega_i = 1750 Nm/(rad/s)
-    omega_a_faktor: 2.0    # aeussere Kursschleife = omega_i/2 = 1.25 rad/s (war 0.5)
+    omega_a_faktor: 3.5    # aeussere Kursschleife = omega_i/2 = 1.25 rad/s (war 0.5)
     dpsi_max_deg: 35.0     # Rate des Kurs-Referenzmodells (< r_max!)
                            #   25 war in der Sim deutlich schlechter
-    tau_r_ff: 0.2          # s, NEU: Tiefpass der Gierraten-Vorsteuerung
+    tau_r_ff: 0.0          # s, NEU: Tiefpass der Gierraten-Vorsteuerung
 
     stoppe_bei_mission_completed: true
 
@@ -66,18 +66,19 @@ thrust_to_vrx_node:
 
 guidance_ilos_node:
   ros__parameters:
-    delta: 4.0             # m, Lookahead. Sim: 3 m minimal besser, aber
-                           #   Zickzack-Risiko mit echtem Rauschen -> 4 m
+    delta: 8.0             # m, Lookahead. Sim: 3 m minimal besser, aber
+    t_vorhalt: 0.3
+    k_beta: 1.6            #   Zickzack-Risiko mit echtem Rauschen -> 4 m
     sigma: 0.3             # Integrator-Gewicht (war 0.1)
     i_max: 10.0            # m, Integrator-Saettigung (war 3 -> nur ~3 Grad Korrektur!)
-    u_max: 3.0
+    u_max: 3.5
     u_min: 0.8             # m/s Mindestfahrt (Ruderwirkung erhalten)
     a_quer_max: 1.0        # m/s^2 -> Kurvenfahrt u = sqrt(a*R); R=11 m -> 3.3 m/s
     k3: 1.0                # Fahrtreduktion bei grossem Kursfehler
     beta_komp: true        # NEU: Schwimmwinkel kompensieren (WAM-V rutscht 20-25 Grad!)
     beta_max_deg: 30.0
-    tau_beta: 3.0          # s, NEU: Schwimmwinkel-Tiefpass. <1.5 s -> Schlingern
-    t_vorschau: 3.0        # s, Kruemmungs-Vorschau fuer das Bremsen vor Kurven
+    tau_beta: 1.0          # s, NEU: Schwimmwinkel-Tiefpass. <1.5 s -> Schlingern
+    t_vorschau: 4.0        # s, Kruemmungs-Vorschau fuer das Bremsen vor Kurven
     fenster_vor: 20.0      # m, Suchfenster auf dem Pfad
     fenster_zurueck: 5.0
     reacquire_dist: 20.0   # m, darueber globale Neusuche

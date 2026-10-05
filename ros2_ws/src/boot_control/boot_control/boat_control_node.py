@@ -55,7 +55,7 @@ class BoatControlNode(Node):
         self.declare_parameter('d_y', 1.027135)
         self.declare_parameter('f_max', 1000.0)
         self.declare_parameter('r_max_deg', 60.0)
-        self.declare_parameter('u_max', 3.0)
+        self.declare_parameter('u_max', 3.5)
         self.declare_parameter('izz', 700.0)
         self.declare_parameter('n_r', 800.0)
         self.declare_parameter('n_rr', 800.0)

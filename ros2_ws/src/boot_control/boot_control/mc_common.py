@@ -36,7 +36,7 @@ class BootParameter:
                                #    VRX laesst 2353 N zu (max_thrust_cmd),
                                #    500 N ist eine bewusst gesetzte Reserve
     r_max: float = math.radians(45.0)   # rad/s, maximale Soll-Gierrate
-    u_max: float = 2.2         # m/s, maximale Soll-Fahrt
+    u_max: float = 3.5         # m/s, maximale Soll-Fahrt
                                #    Grenze: 2*f_max = x_u*u + x_uu*u^2
                                #    -> mit f_max=500 N sind ca. 2.26 m/s drin
 

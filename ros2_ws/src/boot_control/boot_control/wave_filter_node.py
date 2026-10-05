@@ -55,7 +55,7 @@ from boot_control.mc_quaternion import yaw_from_quaternion, quaternion_from_yaw
 from boot_control.mc_common import wrap_pi
 
 ERDRADIUS = 6378137.0
-
+GYRO_GLAETTUNGS_FENSTER = 0.025
 
 class WaveFilterNode(Node):
     def __init__(self):
@@ -95,7 +95,8 @@ class WaveFilterNode(Node):
         self._psi = None        # gefilterter Kurs [rad]
         self._psi_imu = None    # absolute IMU-Orientierung [rad]
         self._r = 0.0           # Gierrate [rad/s], gefiltert
-        self._r_roh = 0.0       # letzter Gyro-Wert
+        self._r_roh = 0.0  # letzter Gyro-Wert (zeitgewichtet gemittelt, s.u.)
+        self._r_roh_hist = []  # NEU: (t, wert)-Paare der letzten GLAETTUNGS_FENSTER Sekunden
         self._psi_imu_alt = None  # (t, psi) fuer Gierrate aus Orientierungsableitung
         self._r_aus_orient = 0.0
         self._gyro_ungueltig = 0
@@ -167,7 +168,13 @@ class WaveFilterNode(Node):
 
     # ------------------------------------------------------------------
     def _imu_cb(self, msg: Imu):
-        self._r_roh = msg.angular_velocity.z
+        t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        if t <= 0.0:
+            t = self._jetzt()
+        self._r_roh_hist.append((t, msg.angular_velocity.z))
+        self._r_roh_hist = [(ti, wi) for ti, wi in self._r_roh_hist
+                            if t - ti <= GYRO_GLAETTUNGS_FENSTER]
+        self._r_roh = sum(wi for _, wi in self._r_roh_hist) / len(self._r_roh_hist)
 
         # orientation_covariance[0] < 0 heisst laut REP 145: keine Orientierung
         if msg.orientation_covariance[0] < 0.0:
@@ -225,8 +232,18 @@ class WaveFilterNode(Node):
         r_roh = self._r_roh
         gyro_ok = math.isfinite(r_roh) and abs(r_roh) < self._r_max
         if gyro_ok and self._psi_imu_alt is not None:
-            # Gyro und Orientierungsableitung duerfen nicht voellig auseinanderlaufen
             gyro_ok = abs(r_roh - self._r_aus_orient) < 1.0
+        r_roh = self._r_roh
+        gyro_ok = math.isfinite(r_roh) and abs(r_roh) < self._r_max
+        if gyro_ok and self._psi_imu_alt is not None:
+            gyro_ok = abs(r_roh - self._r_aus_orient) < 1.0
+
+        self.get_logger().info(                                    # <-- NEU
+            f'DEBUG r_roh={self._r_roh:.3f} r_orient={self._r_aus_orient:.3f} '
+            f'diff={abs(self._r_roh - self._r_aus_orient):.3f} '
+            f'hist_n={len(self._r_roh_hist)} gyro_ok={gyro_ok}',
+            throttle_duration_sec=0.2)                               # <-- NEU
+
         if not gyro_ok:
             self._gyro_ungueltig += 1
             r_roh = self._r_aus_orient
