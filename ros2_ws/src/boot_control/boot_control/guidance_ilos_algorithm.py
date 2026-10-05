@@ -44,6 +44,14 @@ AENDERUNGEN ggue. der alten Version
    k_beta = 0 -> exakt das alte Verhalten.
    VRX-Messung vorher (Delta=8, tau_beta=1): ~1.3-1.7 m aussen in den
    Schleifen, ~2 m Spitze kurz nach jeder Kreuzung.
+8. NEU (2026-10-05): ALOS-Drifterfassung (crab_modus='alos') und
+   abstandsabhaengiger Lookahead (k_delta > 0). Beide sind
+   abwaertskompatibel abschaltbar -- Details im Klassenkopf von
+   ILOSGuidance.
+9. NEU (2026-10-05): Der Knoten liefert zusaetzlich die Solldrehrate des
+   Pfades r_pfad = kappa * u_d an die Regelkaskade. Sie beseitigt dort
+   einen bleibenden Kursnachlauf in Dauerkurven, der bisher vom
+   ILOS-Integrator kompensiert werden musste (siehe mc_kursregler.py).
 """
 
 import math
@@ -213,11 +221,54 @@ class PfadTracker:
 # ILOS
 # =====================================================================
 class ILOSGuidance:
+    """ILOS mit optionaler ALOS-Drifterfassung und adaptivem Lookahead.
+
+    SCHWIMMWINKEL: zwei Betriebsarten (crab_modus)
+    ----------------------------------------------
+    'mess' (Standard, altes Verhalten)
+        beta kommt aus atan2(v, u). v stammt aus der GPS-Geschwindigkeit,
+        die mit dem geschaetzten Kurs in den Bootsrahmen gedreht wird --
+        beta erbt damit JEDES Kursrauschen, und der noetige starke
+        Tiefpass (tau_beta) macht es traege.
+
+    'alos' (Fossen 2023, Adaptive Line-of-Sight)
+        Der Driftwinkel wird NICHT gemessen, sondern aus der Querablage
+        geschaetzt:
+            beta_hat_dot = gamma * Delta * y_e / sqrt(Delta^2 + y_e^2)
+        Vorteile: keine Geschwindigkeitsmessung noetig, kein Kursrauschen
+        im Driftwinkel, und die Aenderungsrate ist von sich aus beschraenkt
+        (|beta_hat_dot| <= gamma*Delta) -- das ist zugleich das Anti-Windup.
+        Der Schaetzwert wird per Projektion auf +-beta_max begrenzt: an der
+        Grenze wird nur noch die Richtung ZURUECK zugelassen, sonst klebt
+        der Schaetzer dort fest.
+        Quelle: Fossen, "An Adaptive Line-of-Sight (ALOS) Guidance Law",
+        IEEE TCST 31(6), 2023; Referenzimplementierung ALOSpsi.m der
+        MSS-Toolbox. Dort wird gamma ~ 0.001 bei Delta = 30 m genannt --
+        fuer eine Lemniskate, deren Kruemmung alle paar Sekunden das
+        Vorzeichen wechselt, ist das viel zu langsam. Deshalb hier
+        deutlich groesser und ausdruecklich zum Tunen freigegeben.
+
+    In BEIDEN Betriebsarten bleibt die Kruemmungs-Vorsteuerung k_beta
+    aktiv: sie liefert den SCHNELLEN Anteil (Vorzeichenwechsel an der
+    Lemniskaten-Kreuzung), waehrend Messung bzw. ALOS den LANGSAMEN
+    Anteil (stationaerer Versatz) tragen. Die beiden ergaenzen sich --
+    weder eine Messung mit 1-3 s Tiefpass noch ein Adaptionsgesetz mit
+    Sekunden-Zeitkonstante kann einen Vorzeichenwechsel vorwegnehmen.
+
+    LOOKAHEAD: optional abstandsabhaengig (Lekkas & Fossen, IEEE TCST
+    22(6), 2014):
+        Delta(y_e) = (Delta_max - Delta_min) * exp(-k_delta * y_e^2) + Delta_min
+    Nahe am Pfad grosser Lookahead (ruhig), weit weg kleiner Lookahead
+    (steiler Anlaufwinkel). k_delta = 0 -> konstantes Delta wie bisher.
+    """
+
     def __init__(self, delta: float = 4.0, sigma: float = 0.3, i_max: float = 10.0,
                  u_max: float = 3.0, u_min: float = 0.8, a_quer_max: float = 1.0,
                  k3: float = 1.0, beta_komp: bool = True, beta_max_deg: float = 30.0,
                  u_beta_min: float = 0.8, t_vorschau: float = 3.0, tau_beta: float = 3.0,
-                 t_vorhalt: float = 0.0, k_beta: float = 0.0):
+                 t_vorhalt: float = 0.0, k_beta: float = 0.0,
+                 delta_min: float = 0.0, k_delta: float = 0.0,
+                 crab_modus: str = 'mess', gamma_alos: float = 0.01):
         self.delta = delta
         self.sigma = sigma
         self.i_max = i_max
@@ -232,6 +283,14 @@ class ILOSGuidance:
         self.tau_beta = tau_beta
         self.t_vorhalt = t_vorhalt
         self.k_beta = k_beta
+        # adaptiver Lookahead
+        self.delta_min = delta_min if delta_min > 0.0 else delta
+        self.k_delta = max(0.0, k_delta)
+        self.delta_eff: float = delta      # zuletzt benutzter Lookahead (Diagnose)
+        # Drifterfassung
+        self.crab_modus = str(crab_modus).lower()
+        self.gamma_alos = gamma_alos
+        self.beta_hat: float = 0.0         # ALOS-Schaetzwert
         self.beta_mess_tp: float = 0.0     # tiefpassgefilterte Messung
         self.beta_ff_tp: float = 0.0       # tiefpassgefilterte Vorhersage
         self.beta_ff: float = 0.0          # Vorhersage (Diagnose)
@@ -240,35 +299,73 @@ class ILOSGuidance:
 
     def reset_integral(self) -> None:
         self.y_int = 0.0
+        self.beta_hat = 0.0
 
+    # ------------------------------------------------------------------
+    def _lookahead(self, y_e: float) -> float:
+        """Lookahead-Distanz, optional abstandsabhaengig (siehe Klassenkopf)."""
+        if self.k_delta <= 0.0 or self.delta_min >= self.delta:
+            return self.delta
+        return ((self.delta - self.delta_min)
+                * math.exp(-self.k_delta * y_e * y_e) + self.delta_min)
+
+    def _alos_update(self, y_e: float, d: float, dt: float) -> None:
+        """beta_hat_dot = gamma * Delta * y_e / sqrt(Delta^2 + y_e^2),
+        mit Projektion auf +-beta_max (an der Grenze nur Rueckweg zulassen)."""
+        d_beta = self.gamma_alos * d * y_e / math.sqrt(d * d + y_e * y_e) * dt
+        if (self.beta_hat >= self.beta_max and d_beta > 0.0) or \
+           (self.beta_hat <= -self.beta_max and d_beta < 0.0):
+            return
+        self.beta_hat = max(-self.beta_max,
+                            min(self.beta_max, self.beta_hat + d_beta))
+
+    # ------------------------------------------------------------------
     def update_heading(self, y_e: float, pi_h: float, u: float, v: float, dt: float,
                        kappa: float = 0.0) -> float:
         """Soll-Heading psi_d [rad] aus Querablage, Pfadwinkel und Schwimmwinkel.
         pi_h: Pfadwinkel -- mit Kruemmungs-Vorhalt bereits an s + u*t_vorhalt
         (siehe GuidanceILOSNode / PfadTracker.pfadwinkel_bei)."""
+        d = self._lookahead(y_e)
+        self.delta_eff = d
+
         # Integrator nur nahe am Pfad -- beim Anfahren von weit weg wuerde er
         # sonst voll aufladen und danach ueberschwingen.
-        if abs(y_e) < 2.0 * self.delta:
-            y_int_dot = (self.delta * y_e) / (self.delta ** 2 + (y_e + self.sigma * self.y_int) ** 2)
+        # Bei ALOS uebernimmt beta_hat die Aufgabe des Integrators; der
+        # ILOS-Integrator wird dann stillgelegt, sonst korrigieren zwei
+        # Integratoren dieselbe Abweichung und schaukeln sich gegenseitig auf.
+        alos = self.crab_modus == 'alos'
+        if not alos and abs(y_e) < 2.0 * d:
+            y_int_dot = (d * y_e) / (d ** 2 + (y_e + self.sigma * self.y_int) ** 2)
             self.y_int = max(-self.i_max, min(self.i_max, self.y_int + y_int_dot * dt))
 
-        chi_d = pi_h - math.atan2(y_e + self.sigma * self.y_int, self.delta)
+        chi_d = pi_h - math.atan2(y_e + self.sigma * self.y_int, d)
 
-        # Schwimmwinkel (Drift) -- nur bei Fahrt sinnvoll messbar.
-        # STARK tiefpassgefiltert: Dreht der Rumpf schnell, bleibt der
-        # Geschwindigkeitsvektor zunaechst stehen -> gemessenes beta aendert
-        # sich sofort um -dpsi. Ungefiltert rueckgekoppelt ist das eine
-        # Mitkopplung mit Verstaerkung ~1 (in der Simulation: Schlingern).
         aktiv = self.beta_komp and u > self.u_beta_min
-        b = max(-self.beta_max, min(self.beta_max, math.atan2(v, u))) if aktiv else 0.0
+
+        # --- schneller Anteil: Drift aus der Pfadkruemmung vorhergesagt ---
         b_ff = max(-self.beta_max, min(self.beta_max, -self.k_beta * u * kappa)) if aktiv else 0.0
         self.beta_ff = b_ff
         a = dt / (self.tau_beta + dt)
-        self.beta_mess_tp += a * (b - self.beta_mess_tp)
         self.beta_ff_tp += a * (b_ff - self.beta_ff_tp)
-        # komplementaer: langsam aus der Messung, schnell aus der Vorhersage
+
+        # --- langsamer Anteil: Messung ODER ALOS-Schaetzung ---
+        if alos:
+            if aktiv:
+                self._alos_update(y_e, d, dt)
+            beta_langsam = self.beta_hat
+        else:
+            # Schwimmwinkel (Drift) -- nur bei Fahrt sinnvoll messbar.
+            # STARK tiefpassgefiltert: Dreht der Rumpf schnell, bleibt der
+            # Geschwindigkeitsvektor zunaechst stehen -> gemessenes beta aendert
+            # sich sofort um -dpsi. Ungefiltert rueckgekoppelt ist das eine
+            # Mitkopplung mit Verstaerkung ~1 (in der Simulation: Schlingern).
+            b = max(-self.beta_max, min(self.beta_max, math.atan2(v, u))) if aktiv else 0.0
+            self.beta_mess_tp += a * (b - self.beta_mess_tp)
+            beta_langsam = self.beta_mess_tp
+
+        # komplementaer: langsam aus Messung/ALOS, schnell aus der Vorhersage
         self.beta = max(-self.beta_max, min(self.beta_max,
-                        self.beta_mess_tp + (b_ff - self.beta_ff_tp)))
+                        beta_langsam + (b_ff - self.beta_ff_tp)))
         return wrap_pi(chi_d - self.beta)
 
     def calculate_speed(self, kappa_max: float, psi: float, psi_d: float) -> float:

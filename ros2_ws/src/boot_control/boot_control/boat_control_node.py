@@ -62,10 +62,16 @@ class BoatControlNode(Node):
         self.declare_parameter('masse', 250.0)
         self.declare_parameter('x_u', 100.0)
         self.declare_parameter('x_uu', 150.0)
-        self.declare_parameter('omega_i', 2.5)
-        self.declare_parameter('omega_a_faktor', 2.0)
+        self.declare_parameter('omega_i', 3.0)
+        self.declare_parameter('omega_a_faktor', 5.0)
         self.declare_parameter('dpsi_max_deg', 35.0)
         self.declare_parameter('tau_r_ff', 0.2)
+        # --- Stellgroessenbegrenzung / D-Anteil / Totzone (2026-10-05) ---
+        self.declare_parameter('dn_max', 6000.0)        # N*m/s, 0 = aus
+        self.declare_parameter('kd_r', 0.0)             # D-Anteil Gierrate
+        self.declare_parameter('tau_d_r', 0.1)          # s, Tiefpass auf D
+        self.declare_parameter('e_psi_totzone_deg', 0.0)  # Grad, 0 = aus
+        self.declare_parameter('k_r_ff', 1.0)           # Gewicht Pfad-Vorsteuerung
         self.declare_parameter('stoppe_bei_mission_completed', True)
 
         g = lambda n: self.get_parameter(n).value
@@ -77,6 +83,10 @@ class BoatControlNode(Node):
             omega_i=float(g('omega_i')), omega_a_faktor=float(g('omega_a_faktor')),
             dpsi_max=math.radians(float(g('dpsi_max_deg'))),
             tau_r_ff=float(g('tau_r_ff')),
+            dn_max=float(g('dn_max')), kd_r=float(g('kd_r')),
+            tau_d_r=float(g('tau_d_r')),
+            e_psi_totzone=math.radians(float(g('e_psi_totzone_deg'))),
+            k_r_ff=float(g('k_r_ff')),
         )
         self._stop_on_completed = bool(g('stoppe_bei_mission_completed'))
         self._ctrl = ControlNode(p=self._p)
@@ -85,6 +95,7 @@ class BoatControlNode(Node):
         self._state = BootState(0.0, 0.0, 0.0)
         self._psi_c = 0.0
         self._u_c = 0.0
+        self._r_pfad = 0.0      # Solldrehrate des Pfades [rad/s], aus /cmd/course_safe
         self._state_empfangen = False
         self._initialisiert = False
         self._mission_fertig = False
@@ -99,10 +110,18 @@ class BoatControlNode(Node):
         self._dt = 1.0 / float(g('timer_hz'))
         self.create_timer(self._dt, self._timer_cb)
 
+        kp_r = self._p.izz * self._p.omega_i
+        t_cl = self._p.izz / (self._p.n_r + kp_r)
         self.get_logger().info(
             f'boat_control_node gestartet: d_y={self._p.d_y:.3f} m, '
             f'f_max={self._p.f_max:.0f} N, N_max={self._p.n_max:.0f} Nm, '
-            f'Kp_r={self._p.izz * self._p.omega_i:.0f}, Kp_psi={self._p.omega_a:.2f}')
+            f'Kp_r={kp_r:.0f}, Kp_psi={self._p.omega_a:.2f}, '
+            f'T_innen={t_cl:.3f} s, dN_max={self._p.dn_max:.0f} Nm/s')
+        # Ein Messfehler dieser Groesse treibt die Aktorik in die volle
+        # Saettigung -- die Zahl gehoert beim Tunen vor Augen.
+        self.get_logger().info(
+            f'Hinweis: Gierraten-Messfehler von {self._p.n_max / kp_r:.2f} rad/s '
+            f'saettigt das Giermoment vollstaendig.')
 
     # ------------------------------------------------------------------
     def _state_cb(self, msg: Odometry):
@@ -117,6 +136,11 @@ class BoatControlNode(Node):
     def _course_cb(self, msg: Twist):
         self._u_c = msg.linear.x
         self._psi_c = wrap_pi(msg.angular.z)
+        # angular.x transportiert die Solldrehrate des Pfades (kappa*u) aus der
+        # Fuehrung. Aeltere Fuehrungsknoten lassen das Feld auf 0 -- dann
+        # verhaelt sich die Kaskade exakt wie vorher.
+        r_pfad = float(msg.angular.x)
+        self._r_pfad = r_pfad if math.isfinite(r_pfad) else 0.0
         # NUR hier -- sonst kann der Watchdog nie ausloesen
         self._ctrl.safety.neuer_befehl(self._psi_c, self._u_c)
 
@@ -159,8 +183,7 @@ class BoatControlNode(Node):
 
         thrust, safety = self._ctrl.regelzyklus(
             x=self._state, psi_c_eingang=self._psi_c, u_c_eingang=self._u_c,
-            dt=self._dt, motorstrom=None,
-
+            dt=self._dt, motorstrom=None, r_pfad=self._r_pfad,
         )
         # (frueher: info-Log mit 50 Hz -> Terminal unlesbar)
         self.get_logger().debug(f'N_sat: {self._ctrl.gierraten_pid._u_sat:.1f}')

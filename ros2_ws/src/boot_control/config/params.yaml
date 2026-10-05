@@ -11,6 +11,12 @@
 #
 # FUER DAS REALE BOOT: nur diesen Block austauschen, kein Code-Eingriff.
 #   d_y: 0.15 / f_max: 200.0 / izz, n_r, masse, x_u, x_uu ausmessen.
+#
+# Stand 2026-10-05: wave_filter_node, boat_control_node und
+# guidance_ilos_node angepasst, um den ~12.5-Hz-Gierraten-Grenzzyklus
+# zu beheben (siehe Kommentare in den jeweiligen Abschnitten).
+# Alle uebrigen Abschnitte sind unveraendert, siehe Instruktion:
+# vorerst nur Regelschleife/Guidance, keine Ebene darueber.
 # =====================================================================
 
 boat_control_node:
@@ -20,7 +26,10 @@ boat_control_node:
     # --- Geometrie / Aktorik ---
     d_y: 1.027135          # m, halber Motorabstand (VRX WAM-V)
     f_max: 1500.0          # N je Motor (VRX laesst 2353 N zu)
-                           #   Sim-Test: 1500 N brachte KEINE bessere Bahn
+                           #   PRUEFEN: Mitschnitt saettigte exakt hier.
+                           #   Stimmt das nicht mit der Realitaet
+                           #   ueberein, Wert anpassen -- davon haengen
+                           #   n_max und die Saettigungsgrenze ab.
     r_max_deg: 60.0        # maximale Soll-Gierrate
     u_max: 3.5             # m/s (Grenze aus 2*f_max = x_u*u + x_uu*u^2 -> 3.33 m/s)
 
@@ -35,26 +44,100 @@ boat_control_node:
     x_uu: 150.0
 
     # --- Reglerauslegung (in Offline-Sim getunt, siehe sim/) ---
-    omega_i: 3.5           # rad/s innere Gierratenschleife (war 1.5)
-                           #   -> Kp_r = izz*omega_i = 1750 Nm/(rad/s)
-    omega_a_faktor: 3.5    # aeussere Kursschleife = omega_i/2 = 1.25 rad/s (war 0.5)
+    omega_i: 3.0            # rad/s innere Gierratenschleife (war 3.5)
+                           #   -> Kp_r = izz*omega_i = 2100 Nm/(rad/s).
+                           #   Bei n_max = 3081 Nm saettigt damit ein
+                           #   Messfehler von 1.47 rad/s die Aktorik
+                           #   vollstaendig (vorher schon ab 1.26 rad/s).
+                           #   Geschlossene innere Schleife: T_i = 0.241 s.
+    omega_a_faktor: 5.0     # aeussere Kursschleife = omega_i/5 (war 3.5)
+                           #   Faktor-5-Regel aus Kapitel 3.2/11.2 des
+                           #   Konzepts. Mit 3.5 lag das Verhaeltnis bei
+                           #   ~1.0 statt 5 -- die Kaskadentrennung war
+                           #   aufgeweicht, das beguenstigt Grenzzyklen.
     dpsi_max_deg: 35.0     # Rate des Kurs-Referenzmodells (< r_max!)
                            #   25 war in der Sim deutlich schlechter
-    tau_r_ff: 0.0          # s, NEU: Tiefpass der Gierraten-Vorsteuerung
+    tau_r_ff: 0.0          # s, Tiefpass der Gierraten-Vorsteuerung (unveraendert)
+
+    # --- Stellgroessenbegrenzung (NEU) ---
+    dn_max: 6000.0          # Nm/s, 0 = aus
+                           #   Kapitel 11.6 fordert die Ratenbegrenzung,
+                           #   implementiert war sie nie. Ein echtes
+                           #   Manoever braucht n_r*r_max = 628 Nm, in
+                           #   0.1 s also ~6300 Nm/s. Das gemessene
+                           #   Rauschen lag bei 2100 Nm in EINEM
+                           #   20-ms-Takt = 105000 Nm/s -- die Grenze
+                           #   kappt also nur das Rauschen.
+                           #   ACHTUNG: nicht enger stellen. Eine zu
+                           #   enge Ratengrenze ist selbst eine
+                           #   Phasenverzoegerung und erzeugt einen
+                           #   eigenen Grenzzyklus (in der Luftfahrt als
+                           #   ratenbegrenzungs-induzierte PIO bekannt).
+    kd_r: 0.0                # NEU -- bleibt 0 (Konzept 11.2)
+    tau_d_r: 0.1              # NEU -- wirkt nur, wenn kd_r > 0
+    e_psi_totzone_deg: 0.0    # NEU -- aus. Erst einschalten, wenn trotz
+                              #   sauberer Messung noch Stellrauschen
+                              #   bleibt; erzeugt stationaeren Restfehler
+                              #   gleicher Groesse.
+    k_r_ff: 1.0               # NEU -- Gewicht der Pfad-Drehratenvorsteuerung
+                              #   Die Fuehrung liefert jetzt
+                              #   r_pfad = kappa*u_d mit. Ohne sie
+                              #   erzwingt der Endanflug des
+                              #   Referenzmodells (K_END = 3.0) in
+                              #   Dauerkurven einen bleibenden Nachlauf
+                              #   von r/K_END: bei 0.27 rad/s sind das
+                              #   5.2 Grad Kursfehler und rund 0.7 m
+                              #   Querablage nach aussen. 0.0 = altes
+                              #   Verhalten.
 
     stoppe_bei_mission_completed: true
 
 wave_filter_node:
   ros__parameters:
-    rate_hz: 50.0
+    rate_hz: 100.0          # Hz (war 50.0)
+                           #   Regler laeuft mit 50 Hz. Zwei gleich
+                           #   schnelle, unsynchrone Timer driften
+                           #   gegeneinander -> der Regler sieht den
+                           #   Zustand mal doppelt, mal gar nicht. Mit
+                           #   doppeltem Takt liegt immer ein frischer
+                           #   Wert an.
     tau_psi: 0.30          # s, Komplementaerfilter IMU-Orientierung <-> Gyro
     tau_vel: 0.50          # s, Tiefpass auf die GPS-Geschwindigkeit
     tau_pos: 0.20          # s, Tiefpass auf die GPS-Position
     heading_offset_deg: 0.0
     gps_topic: '/wamv/sensors/gps/gps/fix'
     imu_topic: '/wamv/sensors/imu/imu/data'
-    r_plausibel_max: 3.0   # rad/s, NEU: Gyro-Werte darueber werden verworfen
-    tau_r: 0.05            # s, NEU: Tiefpass auf die Gierrate
+
+    # --- Gierraten-Aufbereitung (das ist die eigentliche Fehlerbehebung) ---
+    gyro_mittel_n: 8          # NEU, Samples
+                           #   8 Samples bei 100 Hz = 80 ms = genau eine
+                           #   Periode der gemessenen 12.5-Hz-Stoerung
+                           #   der ros_gz_bridge. Der Mittelwert hat
+                           #   damit Nullstellen bei 12.5 / 25 / 37.5 /
+                           #   50 / 62.5 Hz -- also auf dem Grundton UND
+                           #   beiden gemessenen Harmonischen.
+                           #   Rauschuebertragung auf den Schub bei
+                           #   12.5 Hz: 236 N -> 0.6 N je rad/s
+                           #   Messfehler, Faktor 401.
+    r_dev_max: 0.4            # NEU, rad/s
+                           #   Stetige Begrenzung der Abweichung Gyro
+                           #   <-> Orientierungsableitung. ERSETZT die
+                           #   alte harte Umschaltung, die bei jeder
+                           #   Ausloesung einen Sprung in den
+                           #   Filtereingang geschrieben hat. Deckelt
+                           #   den Messfehler bei JEDER Stoerfrequenz,
+                           #   nicht nur bei 12.5 Hz.
+    tau_r: 0.02                 # s, Tiefpass auf die Gierrate (war 0.05)
+                           #   Der Mittelwert leistet die Hauptarbeit ->
+                           #   Tiefpass darf schwaecher sein. Ergebnis:
+                           #   nutzbare Bandbreite steigt von 3.13 auf
+                           #   4.45 Hz, Rauschen sinkt trotzdem.
+    r_plausibel_max: 5.0      # rad/s (war 3.0)
+                           #   Nur noch Notbremse fuer voellig kaputte
+                           #   Werte (NaN, Ausreisser). Die eigentliche
+                           #   Arbeit macht r_dev_max. Der alte Wert 3.0
+                           #   hat bei echten scharfen Drehungen mit
+                           #   ausgeloest.
 
 thrust_to_vrx_node:
   ros__parameters:
@@ -66,23 +149,65 @@ thrust_to_vrx_node:
 
 guidance_ilos_node:
   ros__parameters:
-    delta: 8.0             # m, Lookahead. Sim: 3 m minimal besser, aber
-    t_vorhalt: 0.3
-    k_beta: 1.6            #   Zickzack-Risiko mit echtem Rauschen -> 4 m
-    sigma: 0.3             # Integrator-Gewicht (war 0.1)
-    i_max: 10.0            # m, Integrator-Saettigung (war 3 -> nur ~3 Grad Korrektur!)
+    delta: 8.0              # m, Lookahead. Sim: 3 m minimal besser, aber
+                           #   Zickzack-Risiko mit echtem Rauschen -> 4 m.
+                           #   Vorerst unveraendert lassen, siehe Testplan.
+    t_vorhalt: 0.3           # ggf. anpassen -- Kaskadenverzug ist jetzt
+                           #   kleiner, weil r_pfad den Nachlauf wegnimmt
+    sigma: 0.3              # Integrator-Gewicht (war 0.1)
+    i_max: 10.0             # m, Integrator-Saettigung (war 3 -> nur ~3 Grad Korrektur!)
     u_max: 3.5
-    u_min: 0.8             # m/s Mindestfahrt (Ruderwirkung erhalten)
-    a_quer_max: 1.0        # m/s^2 -> Kurvenfahrt u = sqrt(a*R); R=11 m -> 3.3 m/s
-    k3: 1.0                # Fahrtreduktion bei grossem Kursfehler
-    beta_komp: true        # NEU: Schwimmwinkel kompensieren (WAM-V rutscht 20-25 Grad!)
+    u_min: 0.8              # m/s Mindestfahrt (Ruderwirkung erhalten)
+    a_quer_max: 1.0         # m/s^2 -> Kurvenfahrt u = sqrt(a*R); R=11 m -> 3.3 m/s
+    k3: 1.0                 # Fahrtreduktion bei grossem Kursfehler
+    beta_komp: true         # Schwimmwinkel kompensieren (WAM-V rutscht 20-25 Grad!)
     beta_max_deg: 30.0
-    tau_beta: 1.0          # s, NEU: Schwimmwinkel-Tiefpass. <1.5 s -> Schlingern
-    t_vorschau: 4.0        # s, Kruemmungs-Vorschau fuer das Bremsen vor Kurven
-    fenster_vor: 20.0      # m, Suchfenster auf dem Pfad
+    tau_beta: 1.0           # s, Schwimmwinkel-Tiefpass. <1.5 s -> Schlingern
+    t_vorschau: 2.0          # s, Kruemmungs-Vorschau fuer das Bremsen vor Kurven
+                           #   GEAENDERT (war 4.0) -- noch UNGETESTET, naechster
+                           #   Sweep-Kandidat, kein bestaetigter Wert.
+                           #   Herleitung: a=22.26 m (aus lat/lon A,B), damit
+                           #   R_min = a/3 = 7.42 m (nicht 11 m -- echte
+                           #   Lemniskate hat keinen konstanten Radius!), also
+                           #   u_curve = sqrt(a_quer_max/kappa_max) = 2.72 m/s
+                           #   an der engsten Stelle. Die Geschwindigkeitsschleife
+                           #   (mc_tempo_regler.py) ist vorsteuerungsdominiert:
+                           #   X_ff(u_d) stellt sofort die Zielkraft, der
+                           #   Widerstandsueberschuss bremst das 250-kg-Boot in
+                           #   Sekundenbruchteilen ab -- die 3-s-Zeitkonstante
+                           #   tau_u gilt nur fuer die PI-Fehlerkorrektur um den
+                           #   Sollwert, nicht fuer den Sprung selbst. Die volle
+                           #   36 m breite Verzoegerungszone (kappa>50%kappa_max)
+                           #   vorzuhalten waere daher unnoetig und kostet
+                           #   Rundenzeit, da die Kurvenzonen schon ~70 m der
+                           #   117 m langen Runde einnehmen. 2.0 s Vorschau
+                           #   (~7 m bei u_max) gibt der Schleife genug Vorlauf,
+                           #   ohne grossflaechig zu bremsen.
+    k_beta: 2.4              # war 1.6
+                           #   Aus DEINEN Logs zurueckgerechnet:
+                           #   ff = -k_beta*u*kappa ergibt ueber vier
+                           #   Messpunkte konsistent k_beta = 1.60 (also
+                           #   der eingestellte Wert), waehrend der
+                           #   tatsaechlich gemessene Drift k_beta = 2.74
+                           #   entspricht. Die Vorsteuerung deckte nur
+                           #   58 % ab. 2.4 ist ein bewusst vorsichtiger
+                           #   Schritt: die Streuung der vier Punkte
+                           #   reicht von 2.35 bis 3.37, und eine zu
+                           #   grosse Vorsteuerung kippt den Fehler an
+                           #   der Kreuzung aufs andere Vorzeichen.
+
+    # --- adaptiver Lookahead (Lekkas & Fossen 2014), vorerst AUS ------
+    delta_min: 0.0            # NEU, 0 = konstantes Delta
+    k_delta: 0.0               # NEU, 1/m^2
+
+    # --- Drifterfassung ------------------------------------------------
+    crab_modus: 'mess'        # NEU: 'mess' = wie bisher, 'alos' = adaptiv
+    gamma_alos: 0.01          # NEU, nur bei crab_modus 'alos' wirksam
+
+    fenster_vor: 20.0        # m, Suchfenster auf dem Pfad
     fenster_zurueck: 5.0
-    reacquire_dist: 20.0   # m, darueber globale Neusuche
-    timer_hz: 20.0         # war 10
+    reacquire_dist: 20.0     # m, darueber globale Neusuche
+    timer_hz: 20.0           # war 10
     cmd_topic: '/cmd/course_safe'   # mit Kollisionsvermeidung: '/cmd/course'
 
 figure8_path_publisher:

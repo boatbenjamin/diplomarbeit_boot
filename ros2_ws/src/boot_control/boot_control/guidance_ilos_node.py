@@ -63,6 +63,12 @@ class GuidanceILOSNode(Node):
         self.declare_parameter('t_vorschau', 3.0)      # s, Kurven-Vorschau
         self.declare_parameter('t_vorhalt', 0.0)       # s, Kruemmungs-Vorhalt (0 = aus)
         self.declare_parameter('k_beta', 0.0)          # s, Schwimmwinkel-Vorsteuerung (0 = aus)
+        # --- adaptiver Lookahead (Lekkas & Fossen 2014), k_delta = 0 -> aus ---
+        self.declare_parameter('delta_min', 0.0)       # m, 0 = wie delta (konstant)
+        self.declare_parameter('k_delta', 0.0)         # 1/m^2
+        # --- Drifterfassung: 'mess' (gemessenes beta) oder 'alos' (adaptiv) ---
+        self.declare_parameter('crab_modus', 'mess')
+        self.declare_parameter('gamma_alos', 0.01)     # Adaptionsverstaerkung
         self.declare_parameter('fenster_vor', 20.0)    # m, Suchfenster vorwaerts
         self.declare_parameter('fenster_zurueck', 5.0) # m, Suchfenster rueckwaerts
         self.declare_parameter('reacquire_dist', 20.0) # m, globale Neusuche
@@ -77,6 +83,8 @@ class GuidanceILOSNode(Node):
             beta_komp=bool(g('beta_komp')), beta_max_deg=float(g('beta_max_deg')),
             t_vorschau=float(g('t_vorschau')), tau_beta=float(g('tau_beta')),
             t_vorhalt=float(g('t_vorhalt')), k_beta=float(g('k_beta')),
+            delta_min=float(g('delta_min')), k_delta=float(g('k_delta')),
+            crab_modus=str(g('crab_modus')), gamma_alos=float(g('gamma_alos')),
         )
         self._fenster_vor = float(g('fenster_vor'))
         self._fenster_zurueck = float(g('fenster_zurueck'))
@@ -100,10 +108,18 @@ class GuidanceILOSNode(Node):
         self._pub_diag = self.create_publisher(Vector3Stamped, '/diag/ilos', 10)
 
         self.create_timer(1.0 / float(g('timer_hz')), self._timer_cb)
+        lookahead = (f'{self._guidance.delta} m (konstant)'
+                     if self._guidance.k_delta <= 0.0 else
+                     f'{self._guidance.delta_min}..{self._guidance.delta} m adaptiv '
+                     f'(k_delta={self._guidance.k_delta})')
+        drift = ('ALOS, gamma=%.4g' % self._guidance.gamma_alos
+                 if self._guidance.crab_modus == 'alos' else
+                 'gemessen, tau_beta=%.2g s' % self._guidance.tau_beta)
         self.get_logger().info(
-            f'guidance_ilos_node gestartet: Delta={self._guidance.delta} m, '
+            f'guidance_ilos_node gestartet: Lookahead={lookahead}, '
             f'sigma={self._guidance.sigma}, u_max={self._guidance.u_max} m/s, '
-            f'beta_komp={self._guidance.beta_komp}, t_vorhalt={self._guidance.t_vorhalt} s, k_beta={self._guidance.k_beta} s')
+            f'Drift={drift}, beta_komp={self._guidance.beta_komp}, '
+            f't_vorhalt={self._guidance.t_vorhalt} s, k_beta={self._guidance.k_beta} s')
 
     # ------------------------------------------------------------------
     def _state_cb(self, msg: Odometry):
@@ -165,16 +181,26 @@ class GuidanceILOSNode(Node):
         kappa_vor = self._tracker.kappa_bei(s_vor)
 
         if self._tracker.am_ende:
-            u_d, psi_d = 0.0, self._psi
+            u_d, psi_d, r_pfad = 0.0, self._psi, 0.0
         else:
             psi_d = self._guidance.update_heading(y_e, pi_h, self._u, self._v, dt, kappa_vor)
             u_ref = max(abs(self._u), self._guidance.u_min)
             k_max = self._tracker.kappa_vorschau(max(5.0, u_ref * self._guidance.t_vorschau))
             u_d = self._guidance.calculate_speed(k_max, self._psi, psi_d)
+            # Solldrehrate des Pfades: r = kappa * u (verifizierte Beziehung).
+            # Die Kaskade benutzt sie als Vorsteuerung im Referenzmodell und
+            # spart sich damit den bleibenden Kursnachlauf in Dauerkurven
+            # (Details in mc_kursregler.py). Bewusst mit der SOLL-Fahrt u_d
+            # gerechnet: die Istfahrt traegt das Messrauschen mit hinein.
+            r_pfad = kappa_vor * u_d
 
         msg = Twist()
         msg.linear.x = float(u_d)
         msg.angular.z = float(psi_d)
+        # angular.x = Pfad-Drehratenvorsteuerung [rad/s] fuer boat_control_node.
+        # Knoten, die das Feld nicht kennen, ignorieren es -- dann verhaelt
+        # sich die Kaskade wie vorher.
+        msg.angular.x = float(r_pfad)
         self._pub.publish(msg)
 
         d = Vector3Stamped()
@@ -185,12 +211,17 @@ class GuidanceILOSNode(Node):
         d.vector.z = float(u_d)
         self._pub_diag.publish(d)
 
+        if self._guidance.crab_modus == 'alos':
+            drift = f'b_hat={math.degrees(self._guidance.beta_hat):+5.1f}°'
+        else:
+            drift = f'y_int={self._guidance.y_int:+5.2f}'
         self.get_logger().info(
             f'y_e={y_e:+5.2f} m  s={self._tracker.s:6.1f}/{self._tracker.laenge:.0f} m '
             f'(Runde {self._tracker.runden + 1})  psi_d={math.degrees(psi_d):+6.1f}°  '
             f'psi={math.degrees(self._psi):+6.1f}°  beta={math.degrees(self._guidance.beta):+5.1f}° '
             f'(ff {math.degrees(self._guidance.beta_ff):+5.1f}°, kappa={kappa_vor:+.3f})  '
-            f'y_int={self._guidance.y_int:+5.2f}  u_d={u_d:.2f}  u={self._u:.2f}',
+            f'{drift}  D={self._guidance.delta_eff:.1f}  r_pfad={r_pfad:+.3f}  '
+            f'u_d={u_d:.2f}  u={self._u:.2f}',
             throttle_duration_sec=1.0)
 
 

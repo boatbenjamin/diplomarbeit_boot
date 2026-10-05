@@ -58,6 +58,25 @@ class BootParameter:
                                           # fuer das Boot ueberhaupt fahrbar ist
     tau_r_ff: float = 0.3      # s, Tiefpass auf die Gierraten-Vorsteuerung d(psi_ref)/dt
 
+    # --- Stellgroessenbegrenzung und D-Anteil (2026-10-05) -------------
+    dn_max: float = 6000.0     # N*m/s, Ratenbegrenzung des Giermoments.
+                               #   0 oder inf = aus. Auslegung siehe
+                               #   mc_gierratenregler.py. Sicherheitsnetz gegen
+                               #   Messausreisser, KEIN Ersatz fuer ein sauberes
+                               #   Messsignal (zu eng -> eigener Grenzzyklus).
+    kd_r: float = 0.0          # D-Anteil der Gierratenschleife. Konzept 11.2:
+                               #   "Beginnen Sie mit K_d = 0" -- der D-Anteil
+                               #   wirkt auf die Ableitung der Gierrate und damit
+                               #   genau in den Frequenzbereich der Wellen.
+    tau_d_r: float = 0.1       # s, Tiefpass auf den D-Anteil (nur wenn kd_r > 0)
+    e_psi_totzone: float = 0.0  # rad, Totzone auf den Kursfehler (Konzept 11.6).
+                               #   0 = aus. Nur einsetzen, wenn das Messsignal
+                               #   sauber ist und trotzdem noch Stellrauschen
+                               #   bleibt -- eine Totzone erzeugt stationaeren
+                               #   Restfehler derselben Groesse.
+    k_r_ff: float = 1.0        # Gewicht der externen Kruemmungs-Vorsteuerung
+                               #   r_ff = kappa*u aus der Fuehrung (0 = aus)
+
     # --- abgeleitete Groessen ------------------------------------------
     @property
     def n_max(self) -> float:

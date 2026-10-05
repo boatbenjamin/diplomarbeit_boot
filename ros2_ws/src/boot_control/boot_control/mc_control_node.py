@@ -64,8 +64,12 @@ class ControlNode:
 
     # ------------------------------------------------------------------
     def regelzyklus(self, x: BootState, psi_c_eingang: float, u_c_eingang: float,
-                    dt: float = DT, motorstrom: Optional[float] = None
+                    dt: float = DT, motorstrom: Optional[float] = None,
+                    r_pfad: float = 0.0
                     ) -> Tuple[ThrustCommand, SafetyStatus]:
+        """r_pfad: Solldrehrate des Pfades [rad/s] = kappa*u, von der Fuehrung
+        mitgeliefert. Beseitigt den bleibenden Kursnachlauf des Referenz-
+        modells in Dauerkurven (siehe mc_kursregler.py). 0 = altes Verhalten."""
         status = self.safety.tick(dt, motorstrom=motorstrom)
         if not status.ok:
             return ThrustCommand(0.0, 0.0), status
@@ -74,7 +78,7 @@ class ControlNode:
         u_c = max(-self.p.u_max, min(self.p.u_max, u_c))
 
         # --- Aeussere Schleife: Kurs -> Soll-Gierrate ---
-        r_d = self.kurs_regler.step(psi_c, x.psi, dt)
+        r_d = self.kurs_regler.step(psi_c, x.psi, dt, r_pfad=r_pfad)
 
         # --- Innere Schleife: Gierrate -> Giermoment ---
         N = self.gierraten_pid.step(setpoint=r_d, measurement=x.r,
